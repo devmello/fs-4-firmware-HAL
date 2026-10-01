@@ -1,0 +1,37 @@
+# VCU firmware on an emulated STM32F446, to poke at by hand.
+# Run from the repo root:
+#   renode test/renode/vcu.resc
+# then "start", watch UART4 in the analyzer and CAN frames in the log, and
+# change the pedal with e.g. "adc1 FeedSample 1348 11 -1". $elf can be set
+# before including this script, the default is the debug build.
+# The automated checks are in run_tests.py.
+
+$elf?=@build/debug/vcu/vcu.elf
+
+include @test/renode/STM32F4_ADC_Patched.cs
+
+mach create "vcu"
+machine LoadPlatformDescription @test/renode/vcu.repl
+
+# CAN1 on a virtual bus. Every frame shows up in the log.
+emulation CreateCANHub "canHub"
+connector Connect sysbus.can1 canHub
+logLevel 0 canHub
+
+showAnalyzer sysbus.uart4
+
+macro reset
+"""
+    sysbus LoadELF $elf
+
+    # Renode's bxCAN model only enters init mode with SLEEP clear. ST's HAL
+    # sets INRQ before clearing SLEEP, and that works on the chip (the Mbed
+    # build used the same HAL_CAN_Init on this board), so clear SLEEP here to
+    # let HAL_CAN_Init through.
+    can1 WriteDoubleWord 0x0 0x00010000
+
+    # APPS at 50% travel: APPS1 0.741 V, APPS2 0.786 V (raw codes, 3.3 V = 4095)
+    adc1 FeedSample 920 11 -1
+    adc1 FeedSample 975 12 -1
+"""
+runMacro $reset

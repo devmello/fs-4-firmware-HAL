@@ -1,0 +1,40 @@
+// VCU (STM32F446RE) on top of Renode's generic STM32F4 platform
+
+using "platforms/cpus/stm32f4.repl"
+
+// F446RE sizes, so overflowing the real part shows up here too
+sram:
+    size: 0x20000
+
+flash:
+    size: 0x80000
+
+// Clocks as clock_init() sets them up. Renode doesn't model the RCC tree, so
+// each peripheral gets its input clock here.
+nvic:
+    systickFrequency: 180000000
+
+// 180 MHz core, about one instruction per clock (default is 100)
+cpu:
+    PerformanceInMips: 180
+
+timer5:
+    frequency: 90000000
+
+uart4:
+    frequency: 45000000
+
+// ADC common registers (CCR holds the ADC clock prescaler) and DBGMCU (TIM5
+// freeze bit). Not modelled by Renode, plain storage so tests can read back
+// what the firmware wrote.
+adc_common: Memory.ArrayMemory @ sysbus 0x40012300
+    size: 0x100
+
+dbgmcu: Memory.ArrayMemory @ sysbus 0xE0042000
+    size: 0x10
+
+// Not in stm32f4.repl. STM32F4_ADC_Patched.cs has to be included first.
+// One conversion is (56 + 12) cycles at 22.5 MHz = 3.02 us, like adc.c sets up.
+adc1: Analog.STM32F4_ADC_Patched @ sysbus 0x40012000
+    conversionTimeNs: 3022
+    IRQ -> nvic@18
