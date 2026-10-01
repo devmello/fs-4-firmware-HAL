@@ -1,0 +1,20 @@
+# Build output
+build/
+cmake-build-*/
+
+# Editor / IDE
+.idea/
+.cache/
+compile_commands.json
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# macOS
+.DS_Store
+
+# Python
+*.pyc
+.venv/
