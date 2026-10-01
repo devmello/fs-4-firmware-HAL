@@ -1,0 +1,46 @@
+# Toolchain file for the Arm GNU Toolchain (arm-none-eabi-gcc).
+# Uses ARM_TOOLCHAIN_DIR (the toolchain's bin folder) if set, otherwise PATH.
+
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+
+if(DEFINED ENV{ARM_TOOLCHAIN_DIR})
+    set(ARM_TOOLCHAIN_DIR "$ENV{ARM_TOOLCHAIN_DIR}")
+endif()
+if(ARM_TOOLCHAIN_DIR)
+    file(TO_CMAKE_PATH "${ARM_TOOLCHAIN_DIR}" ARM_TOOLCHAIN_DIR)
+else()
+    # Full path, so objcopy/size still work if PATH changes after configure
+    find_program(ARM_NONE_EABI_GCC arm-none-eabi-gcc REQUIRED)
+    get_filename_component(ARM_TOOLCHAIN_DIR "${ARM_NONE_EABI_GCC}" DIRECTORY)
+endif()
+set(TOOLCHAIN_PREFIX "${ARM_TOOLCHAIN_DIR}/arm-none-eabi-")
+if(CMAKE_HOST_WIN32)
+    set(TOOLCHAIN_SUFFIX .exe)
+endif()
+
+set(CMAKE_C_COMPILER   ${TOOLCHAIN_PREFIX}gcc${TOOLCHAIN_SUFFIX})
+set(CMAKE_CXX_COMPILER ${TOOLCHAIN_PREFIX}g++${TOOLCHAIN_SUFFIX})
+set(CMAKE_ASM_COMPILER ${TOOLCHAIN_PREFIX}gcc${TOOLCHAIN_SUFFIX})
+set(CMAKE_OBJCOPY      ${TOOLCHAIN_PREFIX}objcopy${TOOLCHAIN_SUFFIX} CACHE FILEPATH "")
+set(CMAKE_SIZE         ${TOOLCHAIN_PREFIX}size${TOOLCHAIN_SUFFIX} CACHE FILEPATH "")
+
+# Can't link a test executable without a linker script, so only test compile
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+# Set outright. CMake appends its own -O3 / -g to the *_INIT versions.
+set(CMAKE_C_FLAGS_DEBUG     "-Og -g3" CACHE STRING "")
+set(CMAKE_CXX_FLAGS_DEBUG   "-Og -g3" CACHE STRING "")
+set(CMAKE_ASM_FLAGS_DEBUG   "-g3" CACHE STRING "")
+set(CMAKE_C_FLAGS_RELEASE   "-O2 -g -DNDEBUG" CACHE STRING "")
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g -DNDEBUG" CACHE STRING "")
+set(CMAKE_ASM_FLAGS_RELEASE "-g" CACHE STRING "")
+
+set(CMAKE_EXECUTABLE_SUFFIX_C   .elf)
+set(CMAKE_EXECUTABLE_SUFFIX_CXX .elf)
+set(CMAKE_EXECUTABLE_SUFFIX_ASM .elf)
