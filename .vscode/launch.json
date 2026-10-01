@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug VCU",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/debug/vcu/vcu.elf",
+      "configFiles": ["${workspaceFolder}/tools/openocd/vcu.cfg"],
+      "preLaunchTask": "Build VCU",
+      "runToEntryPoint": "main",
+      // Peripheral register view, needs ST's STM32F446.svd in tools/svd/
+      // "svdFile": "${workspaceFolder}/tools/svd/STM32F446.svd",
+      "showDevDebugOutput": "none"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  // Windows PowerShell 5 doesn't understand &&
+  "windows": {
+    "options": { "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] } }
+  },
+  "tasks": [
+    {
+      "label": "Build VCU",
+      "type": "shell",
+      "command": "cmake --preset debug && cmake --build --preset debug",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Flash VCU",
+      "type": "shell",
+      "command": "cmake --preset debug && cmake --build --preset debug --target flash-vcu",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run host tests",
+      "type": "shell",
+      "command": "cmake --preset host && cmake --build --preset host && ctest --preset host",
+      "group": "test",
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}
