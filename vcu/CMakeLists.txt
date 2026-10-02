@@ -22,6 +22,8 @@ stm32f4_add_hal(vcu_hal
 add_executable(vcu
     main.cpp
     etc/etc_controller.cpp
+    etc/traction_control.cpp
+    filters/filtered_analog_in.cpp
     imu/vn200.cpp
     board/adc.c
     board/board.c
@@ -36,7 +38,7 @@ add_executable(vcu
     ${STM32F4_CMSIS_DIR}/Source/Templates/gcc/startup_stm32f446xx.s
 )
 
-target_include_directories(vcu PRIVATE board etc imu)
+target_include_directories(vcu PRIVATE board etc filters imu)
 target_compile_definitions(vcu PRIVATE ${BOARD_DEFINE})
 target_link_libraries(vcu PRIVATE vcu_hal)
 
