@@ -16,7 +16,7 @@ stm32f4_add_hal(vcu_hal
     DEVICE STM32F446xx
     HSE_VALUE ${BOARD_HSE_VALUE}
     CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/board
-    MODULES adc can tim tim_ex uart
+    MODULES adc can iwdg tim tim_ex uart
 )
 
 add_executable(vcu
@@ -26,8 +26,11 @@ add_executable(vcu
     board/board.c
     board/can.c
     board/console.c
+    board/gpio.c
+    board/imu_uart.c
     board/syscalls.c
     board/timebase.c
+    board/watchdog.c
     ${STM32F4_CMSIS_DIR}/Source/Templates/system_stm32f4xx.c
     ${STM32F4_CMSIS_DIR}/Source/Templates/gcc/startup_stm32f446xx.s
 )
