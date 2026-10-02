@@ -1,0 +1,66 @@
+# Tolerances for compare.py --config. Starting points: tune them from two Mbed
+# bench runs compared against each other (phase 0 plan, section G).
+#
+# Flags, counters and enums must match unless listed. An analog signal may
+# differ by its listed value (default_analog when not listed, one DBC scale
+# step when that is unset) or by range_frac of A's range, whichever is larger.
+# A plain number sets the min/max tolerance only. { tol = X, mean = Y } also
+# checks the mean; mean = false or no mean leaves it unchecked.
+
+[timing]
+period_ms = 1.0       # median interval difference
+jitter_ms = 5.0       # p5 / p95 interval difference
+copy_delay_ms = 1.0   # median P->D copy delay difference (390, 646)
+forward_ms = 2.0      # allowed increase of median forwarding latency (1154, 1666)
+count_frac = 0.02     # frame count difference after scaling by duration
+hist_frac = 0.10      # per-bin difference of the interval histogram (390/646 on D)
+unmatched_frac = 0.01 # increase in frames not copied / forwarded
+skew_ms = 3.0         # how far before its P frame a D copy may be stamped
+min_segment_s = 0.5   # shorter MARK segments are listed but not compared
+
+[signals]
+range_frac = 0.02     # sampling phase moves sweep peaks by up to half a sample step
+
+# 390 SME_RPDO_Throttle_Demand, 646 SME_RPDO_Max_Currents
+SME_THROTL_TorqueDemand = 300           # Q15, follows the pedal (1.4% of MAX_TORQUE)
+SME_THROTL_MaxSpeed = 0
+SME_CURRLIM_ChargeCurrentLim = 0
+SME_CURRLIM_DischargeCurrentLim = 0
+
+# 402 VCU_TPDO_PEDAL_TRAVEL: ADC noise
+VCU_APPS1_HE = 20                       # mV
+VCU_APPS2_HE = 20                       # mV
+VCU_BPPS_HE = 20                        # mV
+VCU_ACCEL_PEDAL_TRAVEL = 1              # %
+VCU_BRAKE_PEDAL_TRAVEL = 1              # %
+
+# 403 VCU_TPDO_STATUS
+VCU_BRAKE_PRESSSURE_FRONT = 15          # psi, about 0.76 psi per mV
+VCU_BRAKE_PRESSSURE_REAR = 15           # psi
+VCU_STEERING_ANGLE = 0.5                # deg
+
+# 660 VCU_TPDO_TRACTION_DATA. Loop time and the derivatives depend on when
+# the wheel frames arrive, so they get wide limits.
+VCU_TRAC_WHEEL_SLIP = 0.01
+VCU_TRAC_TORQUE_REDUCTION = 0
+VCU_TRAC_INTEGRATOR = 0
+VCU_TRAC_LOOP_TIME = 3                  # ms
+VCU_TRAC_RAW_DERIV = 10                 # 1/s
+VCU_TRAC_SMOOTHED_DERIV = 2             # 1/s
+
+# IMU (720, 976, 721, 977, 722), still on the bench. Segments where it is
+# moved by hand will differ run to run.
+VCU_VN_BODY_AF = 0.2                    # m/s^2
+VCU_VN_BODY_AR = 0.2
+VCU_VN_BODY_AD = 0.2
+VCU_VN_NED_Y = 1.0                      # deg
+VCU_VN_NED_P = 0.2
+VCU_VN_NED_R = 0.2
+VCU_VN_LAT = 0.0001                     # deg, about 11 m
+VCU_VN_LON = 0.0001
+VCU_VN_BODY_WY = 1.0                    # deg/s
+VCU_VN_BODY_WP = 1.0
+VCU_VN_BODY_WR = 1.0
+VCU_VN_BODY_VX = 0.1                    # m/s
+VCU_VN_BODY_VY = 0.1
+VCU_VN_BODY_VZ = 0.1
