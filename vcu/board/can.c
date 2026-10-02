@@ -143,9 +143,12 @@ bool can_send_frame(can_bus_t bus_id, const can_frame_t *frame) {
     bus_t *bus = &buses[bus_id];
     bool queued = false;
 
-    // A few microseconds: one copy and at most 3 mailbox writes
+    // A few microseconds: one copy and at most 6 mailbox writes
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
+    // A mailbox may have freed up before its TX interrupt ran, so move the
+    // queue along first instead of dropping a frame that would fit
+    tx_pump(bus);
     if (bus->tx_head - bus->tx_tail < TX_QUEUE_SIZE) {
         bus->tx[bus->tx_head % TX_QUEUE_SIZE] = *frame;
         bus->tx_head++;
