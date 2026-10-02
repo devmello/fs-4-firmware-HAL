@@ -1,0 +1,16 @@
+--- a/vcu/etc/etc_controller.cpp
++++ b/vcu/etc/etc_controller.cpp
+@@ -97,6 +97,13 @@
+         1.000000000f
+     };
+ 
++    // Not upstream: with the pedal at rest the deadzone math gives a
++    // pedal_travel down to -0.0319. Upstream then reads TORQUE_LUT[-1] (out of
++    // bounds), and from -0.025 to 0 it extrapolates to a negative torque.
++    if (pedal_travel < 0.0f) {
++        pedal_travel = 0.0f;
++    }
++
+     float scaled_index = pedal_travel * 40.0f;
+     int index = static_cast<int>(scaled_index);
+ 
