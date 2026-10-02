@@ -74,31 +74,3 @@ add_custom_target(flash-vcu
     USES_TERMINAL
     VERBATIM
 )
-
-# Full flash backup to backups/<board>-<date>-<time>.bin, and restore of a .bin.
-# Both work on the nucleo preset too (same cfg as flash-vcu).
-#   cmake --build --preset debug --target backup-vcu
-#   cmake --preset debug -DRESTORE_BIN=backups/vcu-....bin
-#   cmake --build --preset debug --target restore-vcu
-# DRY_RUN=1 in the environment prints the OpenOCD command only.
-set(RESTORE_BIN "" CACHE FILEPATH "Binary for restore-vcu to flash at 0x08000000")
-set(FLASH_BACKUP_ARGS
-    -DOPENOCD=${OPENOCD}
-    -DCFG=${CMAKE_SOURCE_DIR}/tools/openocd/vcu.cfg
-    -DBACKUP_CFG=${CMAKE_SOURCE_DIR}/tools/openocd/vcu-noreset.cfg
-    -DBOARD=${VCU_BOARD}
-)
-add_custom_target(backup-vcu
-    COMMAND ${CMAKE_COMMAND} ${FLASH_BACKUP_ARGS} -DMODE=backup
-            -DOUT_DIR=${CMAKE_SOURCE_DIR}/backups
-            -P ${CMAKE_SOURCE_DIR}/cmake/flash-backup.cmake
-    USES_TERMINAL
-    VERBATIM
-)
-add_custom_target(restore-vcu
-    COMMAND ${CMAKE_COMMAND} ${FLASH_BACKUP_ARGS} -DMODE=restore
-            -DRESTORE_BIN=${RESTORE_BIN}
-            -P ${CMAKE_SOURCE_DIR}/cmake/flash-backup.cmake
-    USES_TERMINAL
-    VERBATIM
-)
