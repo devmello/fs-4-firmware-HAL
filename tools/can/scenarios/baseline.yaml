@@ -1,0 +1,269 @@
+# Bench baseline for the fs-4 VCU (phase 0 plan, section G).
+#
+# Stands in for the BMS, motor controller (SME), wheel boards and steering
+# wheel. Signal names and scaling come from fs-4-ref/CANbus.dbc. What the VCU
+# reads (vcu/main.cpp):
+#   913  BATT_TPDO_STATUS     P  byte0 bit6 = precharge done, bit2 = shutdown closed
+#   1154 SME_TPDO_Torque_speed P bytes0-1 motor rpm (regen ground speed), forwarded to D
+#   1216 BATT_TPDO_TRAY_TEMPS P  byte1 / 2 = temp C (SENTRALITY_BUSBAR); > 40 drops RTD
+#   1666 SME_TPDO_Temperature P  forwarded to D only
+#   421-424 TPERIPH_xx_TPDO_DATA D  bytes0-1 * 0.1 = wheel rpm (read unsigned)
+#   432  STEERING_DIAL_MODES  D  byte0 bits0-1 drive, 2-3 traction, 4-5 regen
+#
+# Periods: BMS sends status and tray temps every 100 ms on P, the wheel boards
+# 100 Hz, the steering wheel every 100 ms (tractive-battery, peripheral-boards,
+# steering-wheel sources). The SME rates are not in the repo; 20 ms and 100 ms
+# are guesses.
+#
+# Steps with `wait: true` are operator steps: the player waits for Enter
+# (duration_s is used with --no-wait). Values set in a step stay until changed.
+
+streams:
+  BATT_TPDO_STATUS:
+    bus: P
+    period_ms: 100
+    signals:
+      BATT_STATUS_SHUTDOWN_FINAL: 0
+      BATT_STATUS_SHUTDOWN_IN: 1
+      BATT_STATUS_SHUTDOWN_OUT: 1
+      BATT_STATUS_PRECHARGING: 0
+      BATT_STATUS_PRECHARGE_DONE: 0
+      BATT_STATUS_GLV_VOLTAGE: 12.8
+      BATT_STATUS_FAN_PWM_DUTY: 20
+  BATT_TPDO_TRAY_TEMPS:
+    bus: P
+    period_ms: 100
+    offset_ms: 2
+    signals: &tray_normal
+      BATT_TRAY_TEMPS_BOLTED_CONNECTION: 25
+      BATT_TRAY_TEMPS_SENTRALITY_BUSBAR: 25
+      BATT_TRAY_TEMPS_PACK_FUSE: 25
+      BATT_TRAY_TEMPS_COWLING: 25
+      BATT_TRAY_TEMPS_INTAKE: 25
+  SME_TPDO_Torque_speed:
+    bus: P
+    period_ms: 20
+    offset_ms: 7
+    signals:
+      SME_TRQSPD_Speed: 0
+      SME_TRQSPD_Torque: 0
+  SME_TPDO_Temperature:
+    bus: P
+    period_ms: 100
+    offset_ms: 11
+    signals:
+      SME_TEMP_MotorTemperature: 25
+      SME_TEMP_ControllerTemperature: 25
+      SME_TEMP_DC_Bus_V: 0
+  TPERIPH_FL_TPDO_DATA: {bus: D, period_ms: 10, offset_ms: 1, signals: {TPERIPH_FL_DATA_WHEELSPEED: 0}}
+  TPERIPH_FR_TPDO_DATA: {bus: D, period_ms: 10, offset_ms: 3, signals: {TPERIPH_FR_DATA_WHEELSPEED: 0}}
+  TPERIPH_BL_TPDO_DATA: {bus: D, period_ms: 10, offset_ms: 5, signals: {TPERIPH_BL_DATA_WHEELSPEED: 0}}
+  TPERIPH_BR_TPDO_DATA: {bus: D, period_ms: 10, offset_ms: 7, signals: {TPERIPH_BR_DATA_WHEELSPEED: 0}}
+  STEERING_DIAL_MODES:
+    bus: D
+    period_ms: 100
+    offset_ms: 13
+    signals:
+      STEERING_DRIVE_MODE: 0
+      STEERING_TRACTION_MODE: 0
+      STEERING_REGEN_MODE: 0
+
+steps:
+  # 1
+  - label: idle not precharged
+    duration_s: 30
+
+  # 2
+  - label: pedal sweep APPS
+    operator: APPS 0 to 100 to 0 over 5 s, three times
+    wait: true
+    duration_s: 20
+  - label: pedal sweep brake
+    operator: brake 0 to 100 to 0 over 5 s, three times
+    wait: true
+    duration_s: 20
+
+  # 3
+  - label: precharged shutdown closed
+    duration_s: 3
+    set:
+      BATT_TPDO_STATUS: {BATT_STATUS_PRECHARGE_DONE: 1, BATT_STATUS_SHUTDOWN_FINAL: 1}
+      SME_TPDO_Temperature: {SME_TEMP_DC_Bus_V: 300}
+  - label: RTD press
+    operator: hold the brake, press RTD; buzzer should sound for 2 s
+    wait: true
+    duration_s: 5
+
+  # 4
+  - label: pedal sweep APPS in RTD
+    operator: APPS 0 to 100 to 0 over 5 s, three times
+    wait: true
+    duration_s: 20
+  - label: pedal sweep brake in RTD
+    operator: brake 0 to 100 to 0 over 5 s, three times
+    wait: true
+    duration_s: 20
+
+  # 5
+  - label: fault APPS1
+    operator: unplug or ground APPS1 for 1 s, then restore
+    wait: true
+    duration_s: 5
+  - label: fault APPS2
+    operator: unplug or ground APPS2 for 1 s, then restore
+    wait: true
+    duration_s: 5
+  - label: fault BPPS
+    operator: unplug or ground BPPS for 1 s, then restore
+    wait: true
+    duration_s: 5
+  - label: fault front BSE
+    operator: unplug or ground the front brake pressure sensor for 1 s, then restore
+    wait: true
+    duration_s: 5
+  - label: fault rear BSE
+    operator: unplug or ground the rear brake pressure sensor for 1 s, then restore
+    wait: true
+    duration_s: 5
+
+  # 6
+  - label: RTD re-arm before brake accel
+    operator: re-arm RTD if it dropped (hold brake, press RTD)
+    wait: true
+    duration_s: 5
+  - label: brake and accel
+    operator: brake on, APPS over 25 %, then release APPS under 5 %
+    wait: true
+    duration_s: 10
+
+  # 7
+  - label: RTD re-arm before tray temp
+    operator: re-arm RTD if it dropped
+    wait: true
+    duration_s: 5
+  - label: tray temp 45 C
+    operator: RTD should drop
+    duration_s: 5
+    set:
+      BATT_TPDO_TRAY_TEMPS:
+        BATT_TRAY_TEMPS_BOLTED_CONNECTION: 45
+        BATT_TRAY_TEMPS_SENTRALITY_BUSBAR: 45
+        BATT_TRAY_TEMPS_PACK_FUSE: 45
+        BATT_TRAY_TEMPS_COWLING: 45
+        BATT_TRAY_TEMPS_INTAKE: 45
+  - label: tray temp normal
+    duration_s: 2
+    set:
+      BATT_TPDO_TRAY_TEMPS: *tray_normal
+  - label: RTD re-arm before shutdown open
+    operator: re-arm RTD
+    wait: true
+    duration_s: 5
+  - label: shutdown open
+    operator: RTD should drop
+    duration_s: 5
+    set:
+      BATT_TPDO_STATUS: {BATT_STATUS_SHUTDOWN_FINAL: 0}
+  - label: shutdown closed
+    duration_s: 2
+    set:
+      BATT_TPDO_STATUS: {BATT_STATUS_SHUTDOWN_FINAL: 1}
+
+  # 8: motor rpm = wheel rpm * 40 / 11 (gear ratio in main.cpp)
+  - label: wheels 50 rpm
+    duration_s: 3
+    set:
+      TPERIPH_FL_TPDO_DATA: {TPERIPH_FL_DATA_WHEELSPEED: 50}
+      TPERIPH_FR_TPDO_DATA: {TPERIPH_FR_DATA_WHEELSPEED: 50}
+      TPERIPH_BL_TPDO_DATA: {TPERIPH_BL_DATA_WHEELSPEED: 50}
+      TPERIPH_BR_TPDO_DATA: {TPERIPH_BR_DATA_WHEELSPEED: 50}
+      SME_TPDO_Torque_speed: {SME_TRQSPD_Speed: 182}
+  - label: wheels 200 rpm
+    duration_s: 3
+    set:
+      TPERIPH_FL_TPDO_DATA: {TPERIPH_FL_DATA_WHEELSPEED: 200}
+      TPERIPH_FR_TPDO_DATA: {TPERIPH_FR_DATA_WHEELSPEED: 200}
+      TPERIPH_BL_TPDO_DATA: {TPERIPH_BL_DATA_WHEELSPEED: 200}
+      TPERIPH_BR_TPDO_DATA: {TPERIPH_BR_DATA_WHEELSPEED: 200}
+      SME_TPDO_Torque_speed: {SME_TRQSPD_Speed: 727}
+  - label: wheels 500 rpm
+    duration_s: 3
+    set:
+      TPERIPH_FL_TPDO_DATA: {TPERIPH_FL_DATA_WHEELSPEED: 500}
+      TPERIPH_FR_TPDO_DATA: {TPERIPH_FR_DATA_WHEELSPEED: 500}
+      TPERIPH_BL_TPDO_DATA: {TPERIPH_BL_DATA_WHEELSPEED: 500}
+      TPERIPH_BR_TPDO_DATA: {TPERIPH_BR_DATA_WHEELSPEED: 500}
+      SME_TPDO_Torque_speed: {SME_TRQSPD_Speed: 1818}
+  # The VCU takes slip as (rear - front) / rear (etc/traction_control.cpp).
+  - label: wheels rear slip 20 %
+    duration_s: 3
+    set:
+      TPERIPH_FL_TPDO_DATA: {TPERIPH_FL_DATA_WHEELSPEED: 480}
+      TPERIPH_FR_TPDO_DATA: {TPERIPH_FR_DATA_WHEELSPEED: 480}
+      TPERIPH_BL_TPDO_DATA: {TPERIPH_BL_DATA_WHEELSPEED: 600}
+      TPERIPH_BR_TPDO_DATA: {TPERIPH_BR_DATA_WHEELSPEED: 600}
+      SME_TPDO_Torque_speed: {SME_TRQSPD_Speed: 2182}
+  - label: wheels stopped
+    duration_s: 3
+    set:
+      TPERIPH_FL_TPDO_DATA: {TPERIPH_FL_DATA_WHEELSPEED: 0}
+      TPERIPH_FR_TPDO_DATA: {TPERIPH_FR_DATA_WHEELSPEED: 0}
+      TPERIPH_BL_TPDO_DATA: {TPERIPH_BL_DATA_WHEELSPEED: 0}
+      TPERIPH_BR_TPDO_DATA: {TPERIPH_BR_DATA_WHEELSPEED: 0}
+      SME_TPDO_Torque_speed: {SME_TRQSPD_Speed: 0}
+  # The steering wheel can send regen 3 although the DBC range says 0-2.
+  - label: modes drive 1
+    duration_s: 2
+    set: {STEERING_DIAL_MODES: {STEERING_DRIVE_MODE: 1}}
+  - label: modes drive 2
+    duration_s: 2
+    set: {STEERING_DIAL_MODES: {STEERING_DRIVE_MODE: 2}}
+  - label: modes traction 1
+    duration_s: 2
+    set: {STEERING_DIAL_MODES: {STEERING_DRIVE_MODE: 0, STEERING_TRACTION_MODE: 1}}
+  - label: modes traction 2
+    duration_s: 2
+    set: {STEERING_DIAL_MODES: {STEERING_TRACTION_MODE: 2}}
+  - label: modes regen 1
+    duration_s: 2
+    set: {STEERING_DIAL_MODES: {STEERING_TRACTION_MODE: 0, STEERING_REGEN_MODE: 1}}
+  - label: modes regen 2
+    duration_s: 2
+    set: {STEERING_DIAL_MODES: {STEERING_REGEN_MODE: 2}}
+  - label: modes regen 3
+    duration_s: 2
+    set: {STEERING_DIAL_MODES: {STEERING_REGEN_MODE: 3}}
+  - label: modes all 1 with wheels 200 rpm
+    duration_s: 3
+    set:
+      STEERING_DIAL_MODES: {STEERING_DRIVE_MODE: 1, STEERING_TRACTION_MODE: 1, STEERING_REGEN_MODE: 1}
+      TPERIPH_FL_TPDO_DATA: {TPERIPH_FL_DATA_WHEELSPEED: 200}
+      TPERIPH_FR_TPDO_DATA: {TPERIPH_FR_DATA_WHEELSPEED: 200}
+      TPERIPH_BL_TPDO_DATA: {TPERIPH_BL_DATA_WHEELSPEED: 200}
+      TPERIPH_BR_TPDO_DATA: {TPERIPH_BR_DATA_WHEELSPEED: 200}
+      SME_TPDO_Torque_speed: {SME_TRQSPD_Speed: 727}
+  - label: modes 0 wheels stopped
+    duration_s: 2
+    set:
+      STEERING_DIAL_MODES: {STEERING_DRIVE_MODE: 0, STEERING_TRACTION_MODE: 0, STEERING_REGEN_MODE: 0}
+      TPERIPH_FL_TPDO_DATA: {TPERIPH_FL_DATA_WHEELSPEED: 0}
+      TPERIPH_FR_TPDO_DATA: {TPERIPH_FR_DATA_WHEELSPEED: 0}
+      TPERIPH_BL_TPDO_DATA: {TPERIPH_BL_DATA_WHEELSPEED: 0}
+      TPERIPH_BR_TPDO_DATA: {TPERIPH_BR_DATA_WHEELSPEED: 0}
+      SME_TPDO_Torque_speed: {SME_TRQSPD_Speed: 0}
+
+  # 9 (the IMU is on a UART, so these are markers only)
+  - label: IMU still
+    operator: IMU attached and still for 30 s (skip with Enter if not fitted)
+    wait: true
+    duration_s: 30
+  - label: IMU moved
+    operator: move the IMU by hand for about 30 s
+    wait: true
+    duration_s: 30
+
+  - label: not precharged
+    duration_s: 5
+    set:
+      BATT_TPDO_STATUS: {BATT_STATUS_PRECHARGE_DONE: 0, BATT_STATUS_SHUTDOWN_FINAL: 0}
+      SME_TPDO_Temperature: {SME_TEMP_DC_Bus_V: 0}
