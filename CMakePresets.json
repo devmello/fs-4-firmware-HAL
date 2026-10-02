@@ -21,6 +21,12 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "nucleo",
+      "displayName": "NUCLEO-F446RE bench build (Debug)",
+      "inherits": "arm",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "VCU_BOARD": "nucleo" }
+    },
+    {
       "name": "host",
       "displayName": "Host unit tests",
       "generator": "Ninja",
@@ -31,6 +37,7 @@
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
     { "name": "release", "configurePreset": "release" },
+    { "name": "nucleo", "configurePreset": "nucleo" },
     { "name": "host", "configurePreset": "host" }
   ],
   "testPresets": [

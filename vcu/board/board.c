@@ -5,12 +5,23 @@
 #include "console.h"
 #include "timebase.h"
 
+#if defined(BOARD_NUCLEO_F446RE)
+// NUCLEO-F446RE: no crystal, the ST-LINK feeds 8 MHz into OSC_IN (bypass)
+#if HSE_VALUE != 8000000U
+#error "NUCLEO-F446RE HSE is 8 MHz from the ST-LINK, check HSE_VALUE"
+#endif
+#define HSE_MODE   RCC_HSE_BYPASS
+#define HSE_PLLM   4  // 8 MHz / 4 = 2 MHz
+#else
 #if HSE_VALUE != 24000000U
 #error "VCU has a 24 MHz crystal, check HSE_VALUE"
 #endif
+#define HSE_MODE   RCC_HSE_ON
+#define HSE_PLLM   12 // 24 MHz / 12 = 2 MHz
+#endif
 
-// 24 MHz HSE -> PLL -> 180 MHz SYSCLK, APB1 45 MHz, APB2 90 MHz.
-// Same as SetSysClock_PLL_HSE() in the Mbed custom target.
+// HSE -> PLL -> 180 MHz SYSCLK, APB1 45 MHz, APB2 90 MHz. On the VCU it's the
+// same as SetSysClock_PLL_HSE() in the Mbed custom target.
 static void clock_init(void) {
     RCC_OscInitTypeDef osc = {0};
     RCC_ClkInitTypeDef clk = {0};
@@ -19,10 +30,10 @@ static void clock_init(void) {
     __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
     osc.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-    osc.HSEState = RCC_HSE_ON;
+    osc.HSEState = HSE_MODE;
     osc.PLL.PLLState = RCC_PLL_ON;
     osc.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-    osc.PLL.PLLM = 12;            // 24 MHz / 12 = 2 MHz VCO input
+    osc.PLL.PLLM = HSE_PLLM;      // 2 MHz VCO input
     osc.PLL.PLLN = 180;           // 2 MHz * 180 = 360 MHz VCO
     osc.PLL.PLLP = RCC_PLLP_DIV2; // 360 / 2 = 180 MHz SYSCLK
     osc.PLL.PLLQ = 8;             // 45 MHz, 48 MHz domain is unused but keep it in spec
@@ -39,7 +50,7 @@ static void clock_init(void) {
     clk.ClockType = RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
     clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
     clk.AHBCLKDivider = RCC_SYSCLK_DIV1; // 180 MHz
-    clk.APB1CLKDivider = RCC_HCLK_DIV4;  //  45 MHz (CAN, UART4, TIM5 at 90 MHz)
+    clk.APB1CLKDivider = RCC_HCLK_DIV4;  //  45 MHz (CAN, console UART, TIM5 at 90 MHz)
     clk.APB2CLKDivider = RCC_HCLK_DIV2;  //  90 MHz (ADC)
     if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_5) != HAL_OK) {
         Error_Handler();

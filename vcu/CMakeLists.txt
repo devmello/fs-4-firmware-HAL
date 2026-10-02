@@ -1,6 +1,20 @@
+# vcu: the real board. nucleo: a NUCLEO-F446RE for bench tests, same pins for
+# the APPS and CAN, console on the ST-LINK's USART2, clock from the ST-LINK.
+set(VCU_BOARD vcu CACHE STRING "Board to build for: vcu or nucleo")
+set_property(CACHE VCU_BOARD PROPERTY STRINGS vcu nucleo)
+if(VCU_BOARD STREQUAL "vcu")
+    set(BOARD_HSE_VALUE 24000000) # Y1 crystal
+    set(BOARD_DEFINE BOARD_VCU)
+elseif(VCU_BOARD STREQUAL "nucleo")
+    set(BOARD_HSE_VALUE 8000000)  # MCO from the ST-LINK
+    set(BOARD_DEFINE BOARD_NUCLEO_F446RE)
+else()
+    message(FATAL_ERROR "VCU_BOARD must be vcu or nucleo, not '${VCU_BOARD}'")
+endif()
+
 stm32f4_add_hal(vcu_hal
     DEVICE STM32F446xx
-    HSE_VALUE 24000000
+    HSE_VALUE ${BOARD_HSE_VALUE}
     CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/board
     MODULES adc can tim tim_ex uart
 )
@@ -19,6 +33,7 @@ add_executable(vcu
 )
 
 target_include_directories(vcu PRIVATE board etc)
+target_compile_definitions(vcu PRIVATE ${BOARD_DEFINE})
 target_link_libraries(vcu PRIVATE vcu_hal)
 
 target_compile_options(vcu PRIVATE
