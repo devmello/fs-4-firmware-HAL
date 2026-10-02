@@ -13,9 +13,21 @@
       "problemMatcher": ["$gcc"]
     },
     {
+      "label": "Build Nucleo",
+      "type": "shell",
+      "command": "cmake --preset nucleo && cmake --build --preset nucleo",
+      "problemMatcher": ["$gcc"]
+    },
+    {
       "label": "Flash VCU",
       "type": "shell",
       "command": "cmake --preset debug && cmake --build --preset debug --target flash-vcu",
+      "problemMatcher": []
+    },
+    {
+      "label": "Flash Nucleo",
+      "type": "shell",
+      "command": "cmake --preset nucleo && cmake --build --preset nucleo --target flash-vcu",
       "problemMatcher": []
     },
     {

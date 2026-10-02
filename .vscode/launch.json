@@ -14,6 +14,18 @@
       // Peripheral register view, needs ST's STM32F446.svd in tools/svd/
       // "svdFile": "${workspaceFolder}/tools/svd/STM32F446.svd",
       "showDevDebugOutput": "none"
+    },
+    {
+      "name": "Debug Nucleo",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/nucleo/vcu/vcu.elf",
+      "configFiles": ["${workspaceFolder}/tools/openocd/vcu.cfg"],
+      "preLaunchTask": "Build Nucleo",
+      "runToEntryPoint": "main",
+      "showDevDebugOutput": "none"
     }
   ]
 }
