@@ -17,8 +17,10 @@ public:
     // raw * (1 / 4095.0f), like AnalogIn::read()
     float read() { return adc_read(channel); }
 
-    // read() * vref, like AnalogIn::read_voltage()
-    float read_voltage() { return read() * vref; }
+    // read() * vref, like AnalogIn::read_voltage(). Kept out of line like
+    // Mbed's: inlined, GCC fuses it with the caller's next subtraction into
+    // one vfma, which moves the 403 steering angle by a count at some codes.
+    __attribute__((noinline)) float read_voltage() { return read() * vref; }
 
     float get_reference_voltage() const { return vref; }
     void set_reference_voltage(float volts) { vref = volts; }
