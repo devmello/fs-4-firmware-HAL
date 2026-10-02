@@ -125,8 +125,9 @@ int main() {
         imu.poll(pass_start);
         imu.update_state(etc_state.vectornav);
 
-        // Mbed ran this in the button's interrupt. Edges that land within one
-        // pass become one call, so a bounce can't turn RTD on and straight off.
+        // Mbed ran this in the button's interrupt. Edges within one pass
+        // (~60-110 us) become one call. Bounce slower than that still toggles
+        // RTD, like in Mbed; the RC filter on the board is what stops it.
         uint32_t rtd_rises = gpio_rtd_button_rises();
         if (rtd_rises != rtd_rises_seen) {
             rtd_rises_seen = rtd_rises;

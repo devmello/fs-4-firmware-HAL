@@ -80,8 +80,8 @@ public:
     void update_state();
 
     // Not an interrupt handler in the port: main calls this once per loop pass
-    // when the RTD button's EXTI rise counter moved. Several edges within one
-    // pass become one call, so a bounce can't turn RTD on and straight back off.
+    // when the RTD button's EXTI rise counter moved, so several edges within
+    // one pass become one call. Slower bounce still toggles RTD, as in Mbed.
     void rtd_button_irq();
 
     void update_regen_state(float speed);
