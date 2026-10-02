@@ -77,7 +77,7 @@ void send_etc_CAN_messages() {
             | (static_cast<uint8_t>(etc.implaus_apps_out_of_range) << 4) // IMPLAUS_APPS_OUT_OF_RANGE
             | (static_cast<uint8_t>(etc.implaus_apps_deviation) << 6);   // IMPLAUS_APPS_DEVIATION
 
-    can_write(&hcan1, VCU_TPDO_STATUS_ID, data, 8);
+    can_send(CAN_P, VCU_TPDO_STATUS_ID, data, 8);
 }
 
 // SME_RPDO_Throttle_Demand: torque demand from the ETC
@@ -97,7 +97,7 @@ void send_sme_CAN_messages() {
     data[4] = (1 << 0) | (static_cast<uint8_t>(power_ready) << 3); // Forward, PowerReady
     data[5] = next_mbb_alive;                                       // MBB_Alive
 
-    if (can_write(&hcan1, SME_RPDO_THROTTLE_DEMAND_ID, data, 8)) {
+    if (can_send(CAN_P, SME_RPDO_THROTTLE_DEMAND_ID, data, 8)) {
         mbb_alive = next_mbb_alive;
     }
 }
@@ -108,5 +108,5 @@ void print_debug() {
            etc.apps2_voltage, etc.apps2_position,
            etc.pedal_position, etc.torque_demand,
            etc.implaus_apps_deviation, etc.implaus_apps_out_of_range,
-           can_tx_error_count(&hcan1), can_bus_off(&hcan1) ? " bus-off" : "");
+           can_tx_error_count(CAN_P), can_bus_off(CAN_P) ? " bus-off" : "");
 }
