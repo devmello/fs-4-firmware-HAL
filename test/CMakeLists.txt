@@ -26,3 +26,8 @@ if(MBED_VCU_DIR)
     endif()
     add_subdirectory(parity)
 endif()
+
+# VectorNav VN-200 driver tests
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/imu/CMakeLists.txt)
+    add_subdirectory(imu)
+endif()
