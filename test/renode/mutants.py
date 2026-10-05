@@ -204,7 +204,7 @@ MUTANTS = [
         ('hiwdg.Init.Reload = 125U - 1U;',
          'hiwdg.Init.Reload = 250U - 1U;'),
     ]),
-    ('no_deadzone_clamp', 'vcu/etc/etc_controller.cpp', "no clamp before the LUT (upstream's out of bounds read)", [
+    ('no_deadzone_clamp', 'vcu/etc/etc_controller.cpp', "no clamp before the pedal map (upstream's out of bounds read)", [
         ('    if (pedal_travel < 0.0f) {\n'
          '        pedal_travel = 0.0f;\n'
          '    }\n',
@@ -255,9 +255,8 @@ MUTANTS = [
         ('FRONT_BSE_BUFFER_VOLTAGE = 0.02f;',
          'FRONT_BSE_BUFFER_VOLTAGE = 0.03f;'),
     ]),
-    ('lut_typo', 'vcu/etc/etc_controller.cpp', 'one LUT point off', [
-        ('        0.350000000f,',
-         '        0.360000000f,'),
+    ('map_coefficient', 'vcu/etc/etc_controller.cpp', 'pedal map 0.9x^2 term 0.8x^2', [
+        ('0.9f * x', '0.8f * x'),
     ]),
     ('max_torque', 'vcu/etc/etc_controller.h', 'torque scale 0.60', [
         ('MAX_TORQUE = 32767*0.65;',

@@ -18,6 +18,7 @@ Scenarios pick inputs where the set is a single value when it matters.
 
 import math
 import struct
+from fractions import Fraction
 
 US = 1e-6
 
@@ -32,6 +33,32 @@ def _bits(x):
 
 def _from_bits(b):
     return struct.unpack("<f", struct.pack("<I", b))[0]
+
+
+def _round_f32(q):
+    """Fraction q to the nearest float32 (ties to even), normal range only"""
+    if q == 0:
+        return 0.0
+    sign, q = (-1.0, -q) if q < 0 else (1.0, q)
+    e = q.numerator.bit_length() - q.denominator.bit_length()
+    if Fraction(2) ** e > q:
+        e -= 1
+    m = q * Fraction(2) ** (23 - e)  # 2**23 <= m < 2**24
+    n, rest = divmod(m.numerator, m.denominator)
+    if 2 * rest > m.denominator or (2 * rest == m.denominator and n % 2):
+        n += 1
+    return sign * math.ldexp(n, e - 23)
+
+
+def fma32(a, b, c):
+    """std::fma on floats (vfma.f32): a * b + c, rounded once to float32.
+    math.fma (Python 3.13+) rounds to double; rounding that to float32 again
+    only goes wrong when it lands exactly halfway between two floats, and
+    then the exact sum decides."""
+    d = math.fma(a, b, c)
+    if struct.unpack("<Q", struct.pack("<d", d))[0] & 0x1FFFFFFF == 0x10000000:
+        return _round_f32(Fraction(a) * Fraction(b) + Fraction(c))
+    return f32(d)
 
 
 def ulp(x):
@@ -183,14 +210,7 @@ APPS2_LOW, APPS2_HIGH = f32(APPS2_MIN - APPS_BUFFER), f32(APPS2_MAX + APPS_BUFFE
 BPPS_LOW, BPPS_HIGH = f32(BPPS_MIN - BPPS_BUFFER), f32(BPPS_MAX + BPPS_BUFFER)
 BSE_LOW, BSE_HIGH = f32(BSE_MIN - BSE_BUFFER), f32(BSE_MAX + BSE_BUFFER)
 
-TORQUE_LUT = [f32(v) for v in (
-    0.000000000, 0.008059375, 0.017225000, 0.027478125, 0.038800000, 0.051171875,
-    0.064575000, 0.078990625, 0.094400000, 0.110784380, 0.128125000, 0.146403120,
-    0.165600000, 0.185696880, 0.206675000, 0.228515630, 0.251200000, 0.274709370,
-    0.299025000, 0.324128120, 0.350000000, 0.376621870, 0.403975000, 0.432040630,
-    0.460800000, 0.490234380, 0.520325000, 0.551053130, 0.582400000, 0.614346870,
-    0.646875000, 0.679965630, 0.713600000, 0.747759380, 0.782425000, 0.817578130,
-    0.853200000, 0.889271880, 0.925775000, 0.962690630, 1.000000000)]
+MAP_A, MAP_B, MAP_C = f32(-0.2), f32(0.9), f32(0.3)  # -0.2x^3 + 0.9x^2 + 0.3x
 
 
 def clamp01(x):
@@ -228,15 +248,14 @@ def average(p1, p2):
     return f32(f32(p1 + p2) / 2.0)
 
 
-def accelerator_mapping(travel):
-    if travel < 0.0:  # the port's clamp (not upstream)
-        travel = 0.0
-    scaled = f32(travel * 40.0)
-    index = int(scaled)
-    if index >= 40:
+def accelerator_mapping(x):
+    """The port's cubic (upstream interpolates a table of it)"""
+    if x < 0.0:  # the port's clamp (not upstream)
+        x = 0.0
+    if x >= 1.0:
         return 1.0
-    fraction = f32(scaled - float(index))
-    return f32(TORQUE_LUT[index] + f32(fraction * f32(TORQUE_LUT[index + 1] - TORQUE_LUT[index])))
+    inner = fma32(f32(MAP_A * x), x, f32(MAP_B * x))
+    return fma32(inner, x, f32(MAP_C * x))
 
 
 def unfiltered_torque(avg):

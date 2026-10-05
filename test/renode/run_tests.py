@@ -28,7 +28,7 @@ The emulated board (vcu.repl)
 
 How the checks work
   Each scenario is a timeline of inputs. From that timeline alone, model.py
-  (a float32 copy of the ETC math, the filters, the LUT, frame packing and
+  (a float32 copy of the ETC math, the filters, the pedal map, frame packing and
   traction control) and the code below (the implausibility timers, brake +
   accel latch, ready to drive, buzzer, job schedule) predict, for any moment, what each output should be. The
   EWMA filters make values depend on loop timing, so predictions are sets
@@ -1247,7 +1247,7 @@ def check_pedals(c, ex, f):
         if c.check(f.u16(at) in want, f"402 bytes {at}-{at + 1}: {f.u16(at)}, expected {describe(want)}: {f}"):
             c.count("402 voltages")
     want = e.mapped_percents()
-    if c.check(f.data[6] in want, f"402 byte 6 (LUT output %): {f.data[6]}, expected {describe(want)}: {f}"):
+    if c.check(f.data[6] in want, f"402 byte 6 (pedal map output %): {f.data[6]}, expected {describe(want)}: {f}"):
         c.count("402 pedal")
     want = int_set(e.bpps, model.percent)
     if c.check(f.data[7] in want, f"402 byte 7 (BPPS %): {f.data[7]}, expected {describe(want)}: {f}"):

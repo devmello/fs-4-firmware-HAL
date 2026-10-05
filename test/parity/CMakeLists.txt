@@ -30,8 +30,11 @@ foreach(f IN LISTS FS4_FILES)
 endforeach()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${UPSTREAM_PATCH} ${IMU_STUB})
 
-# The port's one change in behavior (the deadzone clamp). If this stops
-# applying, fs-4's ETC changed: port the change to vcu/, then redo the patch.
+# The port's changes in behavior, both in accelerator_mapping(): the deadzone
+# clamp, and the cubic computed in place of the 41-point table. The test then
+# checks the rest of the ETC matches bit for bit; etc_test checks how far the
+# map is from upstream's table. If this stops applying, fs-4's ETC changed:
+# port the change to vcu/, then redo the patch.
 find_program(PATCH_EXECUTABLE patch REQUIRED)
 execute_process(
     COMMAND ${PATCH_EXECUTABLE} -p1 -N -F0 -f -s -i ${UPSTREAM_PATCH}
