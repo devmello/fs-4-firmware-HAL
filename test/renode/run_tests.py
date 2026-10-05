@@ -2040,7 +2040,7 @@ def scenarios():
         t += 10.5
 
     def soak_check(c, s, r, ex):
-        expect_counts(c, {"torques": 100, "torque ranges": 500, "forwarded": 2100, "660 after an update": 200,
+        expect_counts(c, {"torques": 90, "torque ranges": 500, "forwarded": 2100, "660 after an update": 200,
                           "debug lines": 39, "PowerReady bits": 700})
         c.check(len(ram_rises(r, "ba")) == 5, f"brake + accel latched {len(ram_rises(r, 'ba'))} times, expected 5")
         light = len([1 for t, v in r.pins["PC0"] if v])

@@ -100,9 +100,10 @@ TAU_TORQUE = f32(1.0 / (2.0 * math.pi * 40))  # motor_torque LowPassFilter, 40 H
 DT_MIN_US = 30
 
 # FilteredAnalogIn::read() takes elapsed_time(), reads the ADC, then resets the
-# timer, so the time the read takes (a few us) is never counted and the filter
-# runs slow. Measured 4-8 % with ~65 us passes; allow up to this much.
-FILTER_TIME_LOST = 0.12
+# timer, so the time the read takes (about 4 us of a ~65 us pass here) is never
+# counted and the filter runs slow. A 402 at 7.07 ms into a step showed
+# 4.5-6.7 %. Wider than this makes the bands too wide to pin torques down.
+FILTER_TIME_LOST = 0.07
 
 
 def stuck_ulps(tau):
