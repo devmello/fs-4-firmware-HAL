@@ -99,6 +99,11 @@ TAU_TORQUE = f32(1.0 / (2.0 * math.pi * 40))  # motor_torque LowPassFilter, 40 H
 # for. Passes measure 63-110 us in the emulator, more with CAN or printf.
 DT_MIN_US = 30
 
+# FilteredAnalogIn::read() takes elapsed_time(), reads the ADC, then resets the
+# timer, so the time the read takes (a few us) is never counted and the filter
+# runs slow. Measured 4-8 % with ~65 us passes; allow up to this much.
+FILTER_TIME_LOST = 0.12
+
 
 def stuck_ulps(tau):
     """How far from its input a filter can stay stuck after a step, in ulps"""
@@ -273,54 +278,6 @@ def steering_x100(code):
     v = adc_volts(code)
     angle = f32(f32(f32(v - STEER_AVG) / STEER_RANGE) * STEER_MAX_ANGLE)
     return trunc_int(f32(angle * 100.0), 16, True)
-
-
-# --- IMU (FakeVN200.Values, main.cpp send_imu_CAN_messages) ---------------
-
-RAD_TO_DEG = f32(57.2957795)
-
-
-def imu_values(n):
-    """Same doubles and casts as FakeVN200.Values() in C#"""
-    accel = [f32(1.25 + 0.01 * (n % 100)), f32(-0.75 - 0.013 * (n % 50)), f32(-9.80665 + 0.0021 * (n % 30))]
-    gyro = [f32(0.0175 * ((n % 40) - 20)), f32(-0.25 + 0.003 * (n % 60)), f32(0.5 - 0.0071 * (n % 25))]
-    ypr = [f32(-179.5 + 3.61 * (n % 99)), f32(12.25 - 0.5 * (n % 13)), f32(-3.3 + 0.07 * (n % 90))]
-    lla = [36.99999123 + 1e-6 * n, -122.06123456 - 1e-6 * n, 12.5 + 0.1 * (n % 10)]
-    vel = [f32(27.75 - 0.25 * (n % 40)), f32(-0.5 + 0.02 * (n % 50)), f32(0.031 * ((n % 20) - 10))]
-    return accel, gyro, ypr, lla, vel
-
-
-def _le16(values):
-    return b"".join(struct.pack("<h", v) for v in values)
-
-
-def imu_frames(n):
-    """{id: data} the IMU job sends with message n decoded (None: all zero,
-    nothing received yet)"""
-    if n is None:
-        accel = gyro = ypr = vel = [0.0, 0.0, 0.0]
-        lla = [0.0, 0.0, 0.0]
-    else:
-        accel, gyro, ypr, lla, vel = imu_values(n)
-    x100 = lambda v: trunc_int(f32(v * 100.0), 16, True)
-    return {
-        0x2D0: _le16([x100(v) for v in accel]),
-        0x3D0: _le16([x100(v) for v in ypr]),
-        0x2D1: struct.pack("<ii", trunc_int(lla[0] * 1e7, 32, True), trunc_int(lla[1] * 1e7, 32, True)),
-        0x3D1: _le16([trunc_int(f32(f32(v * RAD_TO_DEG) * 10.0), 16, True) for v in gyro]),
-        0x2D2: _le16([x100(v) for v in vel]),
-    }
-
-
-def crc16(data):
-    """CRC-16-CCITT, polynomial 0x1021, initial value 0 (bitwise)"""
-    crc = 0
-    for byte in data:
-        crc ^= byte << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else crc << 1
-            crc &= 0xFFFF
-    return crc
 
 
 # --- traction control (traction_control.cpp, KP = KI = KD = 0) ------------

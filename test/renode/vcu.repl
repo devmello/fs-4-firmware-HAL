@@ -1,5 +1,5 @@
 // VCU (STM32F446RE) on top of Renode's generic STM32F4 platform.
-// STM32F4_ADC_Patched.cs and STM32F4_DMA_Patched.cs have to be included first.
+// STM32F4_ADC_Patched.cs has to be included first.
 
 using "platforms/cpus/stm32f4.repl"
 
@@ -26,19 +26,6 @@ timer5:
 // works out from BRR and this clock.
 uart4:
     frequency: 45000000
-
-// UART5_RX is request 4 on DMA1 stream 0 (stream * 8 + channel, see the DMA model)
-uart5:
-    frequency: 45000000
-    DMARequest -> dma1p@4
-
-// Renode's STM32DMA can't run a circular receive ring (no circular mode, half
-// transfer or channel selection), so dma1 comes off the bus and the patched
-// model takes its place
-dma1: @ none
-
-dma1p: DMA.STM32F4_DMA_Patched @ sysbus 0x40026000
-    [0-7] -> nvic@[11-17,47]
 
 // ADC common registers (CCR holds the ADC clock prescaler), SYSCFG (EXTICR for
 // the RTD button) and DBGMCU (freeze bits). Not modelled by Renode, plain

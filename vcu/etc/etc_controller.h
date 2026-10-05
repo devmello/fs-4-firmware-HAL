@@ -12,7 +12,6 @@
 #include "one_shot.h"
 #include "pins.h"
 #include "stopwatch.h"
-#include "vectornav_state.h"
 #include "filtered_analog_in.h"
 #include "traction_control.h"
 #include "low_pass_filter.h"
@@ -55,7 +54,6 @@ struct ETCState {
     float wheel_rpm_bl = 0.0f;
     float wheel_rpm_br = 0.0f;
     float tc_mult_factor = 1.0f;
-    VectornavState vectornav;
     uint8_t drive_mode = 0;
     uint8_t traction_mode = 0;
     uint8_t regen_mode = 0;

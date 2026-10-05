@@ -10,7 +10,6 @@ add_executable(etc_test
 target_include_directories(etc_test PRIVATE
     ${CMAKE_SOURCE_DIR}/vcu/etc
     ${CMAKE_SOURCE_DIR}/vcu/filters
-    ${CMAKE_SOURCE_DIR}/vcu/imu
     ${CMAKE_SOURCE_DIR}/vcu/board
 )
 if(MSVC)
@@ -29,9 +28,4 @@ if(FS4_DIR)
         message(FATAL_ERROR "No vcu/etc/etc_controller.cpp in FS4_DIR=${FS4_DIR}")
     endif()
     add_subdirectory(parity)
-endif()
-
-# VectorNav VN-200 driver tests
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/imu/CMakeLists.txt)
-    add_subdirectory(imu)
 endif()

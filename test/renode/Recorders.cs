@@ -340,7 +340,6 @@ namespace Antmicro.Renode.Testing
     //   <us> can <1|2> <id hex> <s|x><d|r> <data hex, or ->
     //   <us> pin <port letter> <pin> <0|1>      gpioPort<letter> input level
     //   <us> adc <channel> <code>               adc1 conversions from now on
-    //   <us> imu <command>                      fake VN-200 on uart5, see FakeVN200
     //   <us> mark <label>                       logs the time
     //   <us> read <label> <address>             logs the 32-bit value there
     //   <us> write <address> <value>            32-bit sysbus write
@@ -442,9 +441,6 @@ namespace Antmicro.Renode.Testing
                 feed.Invoke(adc, new object[] { uint.Parse(a[2]), uint.Parse(a[1]), -1 });
                 break;
             }
-            case "imu":
-                FakeVN200Extensions.Of(Get<IUART>("sysbus.uart5")).Command(string.Join(" ", a.Skip(1)));
-                break;
             case "mark":
                 break;
             case "read":

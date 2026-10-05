@@ -2,8 +2,7 @@
 # Run from the repo root:
 #   renode test/renode/vcu.resc
 # then "start". UART4 (the debug lines) opens in an analyzer, every frame on
-# either CAN bus shows in the log, and a fake VN-200 on UART5 answers the
-# configuration and streams at 100 Hz. Some inputs to try:
+# either CAN bus shows in the log. Some inputs to try:
 #   adc1 FeedSample 1250 11 -1         APPS1 (channel 11) to code 1250, about 1 V
 #   adc1 FeedSample 1250 12 -1         APPS2 (12). BPPS is 13, brake pressures
 #                                      0 (rear) and 1 (front), steering 15
@@ -11,18 +10,13 @@
 #   adc1 FeedSample 750 13 -1          brake pressed
 #   gpioPortC OnGPIO 13 true           RTD button down (false: up)
 #   can2 InjectFrame 0x1A5 "1027"      wheel speed frames (421-424) on CAN_D
-#   uart5 FakeVN200Command "reset"     sensor back to factory settings
 #   machine BlockWatchdogRefresh 0 99999999   stop the IWDG reloads
 # $elf can be set before including this script, the default is the debug
-# build. The fake sensor logs to $vnlog. The automated checks are in
-# run_tests.py.
+# build. The automated checks are in run_tests.py.
 
 $elf?=@build/debug/vcu/vcu.elf
-$vnlog?=@/tmp/vcu-vn200.txt
 
 include @test/renode/STM32F4_ADC_Patched.cs
-include @test/renode/STM32F4_DMA_Patched.cs
-include @test/renode/FakeVN200.cs
 include @test/renode/Recorders.cs
 
 mach create "vcu"
@@ -59,5 +53,3 @@ cpu WriteWordAt `sysbus GetSymbolAddress "can_init"` 0x40006800 0x00010000
 
 # Reset flags in RCC_CSR (IWDGRSTF after a watchdog reset), for the boot line
 machine EmulateResetFlags ""
-
-uart5 AttachFakeVN200 0x40005000 $vnlog

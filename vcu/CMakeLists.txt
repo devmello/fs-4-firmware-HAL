@@ -24,13 +24,11 @@ add_executable(vcu
     etc/etc_controller.cpp
     etc/traction_control.cpp
     filters/filtered_analog_in.cpp
-    imu/vn200.cpp
     board/adc.c
     board/board.c
     board/can.c
     board/console.c
     board/gpio.c
-    board/imu_uart.c
     board/syscalls.c
     board/timebase.c
     board/watchdog.c
@@ -38,7 +36,7 @@ add_executable(vcu
     ${STM32F4_CMSIS_DIR}/Source/Templates/gcc/startup_stm32f446xx.s
 )
 
-target_include_directories(vcu PRIVATE board etc filters imu)
+target_include_directories(vcu PRIVATE board etc filters)
 target_compile_definitions(vcu PRIVATE ${BOARD_DEFINE})
 target_link_libraries(vcu PRIVATE vcu_hal)
 
