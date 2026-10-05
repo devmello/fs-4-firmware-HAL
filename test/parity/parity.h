@@ -357,6 +357,7 @@ struct Coverage {
     int negative_pre_map = 0;
     int capped_map = 0;
     int slip_nonzero = 0;
+    float longest_tc_loop = 0.0f; // s
 
     template <typename ETC>
     void count(ETC &etc, int prev_buzzer) {
@@ -374,6 +375,9 @@ struct Coverage {
         negative_pre_map += (s.APPS1_position + s.APPS2_position) / 2.0f < 0.0f;
         capped_map += s.APPS_position_avg == 1.0f;
         slip_nonzero += etc.traction_controller.get_slip() > 0.0f;
+        if (etc.traction_controller.get_loop_time() > longest_tc_loop) {
+            longest_tc_loop = etc.traction_controller.get_loop_time();
+        }
     }
 
     void print(int tc_updates) const {
@@ -381,16 +385,16 @@ struct Coverage {
                      "steps %d: RTD %d, motor enabled %d, buzzer on %d (%d timeouts), RTD on %d, "
                      "off by press %d, implaus dev %d range %d BPPS %d BSE %d brake+accel %d, "
                      "brake light %d, pedal below 0 before the map %d, map capped %d, "
-                     "TC updates %d (slip > 0 in %d steps)\n",
+                     "TC updates %d (slip > 0 in %d steps, longest loop time %.0f s)\n",
                      STEPS, rtd_on_steps, motor_enabled_steps, buzzer_on_steps, buzzer_timeouts,
                      rtd_turned_on, rtd_turned_off_by_press, implaus_steps[0], implaus_steps[1],
                      implaus_steps[2], implaus_steps[3], implaus_steps[4], brakelight_steps,
-                     negative_pre_map, capped_map, tc_updates, slip_nonzero);
+                     negative_pre_map, capped_map, tc_updates, slip_nonzero, longest_tc_loop);
     }
 };
 
-// argv[1]: start time in us, to test the 32-bit timer wrap. Call it before
-// building the ETC, whose constructors start timers.
+// argv[1]: start time in us (the second run starts just under 2^32). Call it
+// before building the ETC, whose constructors start timers.
 inline void start(int argc, char **argv) {
     now_us = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 0;
 }
@@ -408,7 +412,7 @@ int run(ETC &etc, Probe &torque_probe, RtdRise rtd_rise, BeforeUpdate before_upd
     uint64_t next_mbb_alive = now_us + 40000;
 
     // Boot: pedal released, brake held, then precharge and an RTD press, so
-    // the buzzer's 2 s and the filters run across the wrap in the second run
+    // the buzzer's 2 s and the filters run across 2^32 us in the second run
     volts[CH_APPS1] = APPS1_MIN;
     volts[CH_APPS2] = APPS2_MIN;
     volts[CH_BPPS] = 0.7f;
@@ -507,6 +511,12 @@ int run(ETC &etc, Probe &torque_probe, RtdRise rtd_rise, BeforeUpdate before_upd
             now_us += 1000 + rng.next() % 20000;
         } else {
             now_us += 30000 + rng.next() % 90000;
+        }
+        // Once, 72 min without a step: longer than 2^32 us, so the timers
+        // running across it (traction control's loop timer, the filters') need
+        // more than 32 bits of microseconds, as Mbed's Timer has
+        if (step == STEPS / 2) {
+            now_us += 72ull * 60 * 1000000;
         }
     }
 

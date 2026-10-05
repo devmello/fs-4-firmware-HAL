@@ -5,6 +5,9 @@
 // TIM5, same timer Mbed uses for its microsecond ticker
 static TIM_HandleTypeDef htim5;
 
+// Times TIM5 has wrapped, the upper 32 bits of timebase_micros()
+static volatile uint32_t tim5_wraps;
+
 void timebase_init(void) {
     __HAL_RCC_TIM5_CLK_ENABLE();
 
@@ -27,11 +30,42 @@ void timebase_init(void) {
     if (HAL_TIM_Base_Init(&htim5) != HAL_OK) {
         Error_Handler();
     }
-    if (HAL_TIM_Base_Start(&htim5) != HAL_OK) {
+
+    // HAL_TIM_Base_Init loads the prescaler with an update event, which also
+    // sets UIF. Clear it, or it would count as a wrap.
+    __HAL_TIM_CLEAR_FLAG(&htim5, TIM_FLAG_UPDATE);
+
+    // Same priority as the other interrupts, so none of them can run between
+    // the handler clearing UIF and counting the wrap
+    HAL_NVIC_SetPriority(TIM5_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(TIM5_IRQn);
+    if (HAL_TIM_Base_Start_IT(&htim5) != HAL_OK) {
         Error_Handler();
     }
 }
 
-uint32_t timebase_micros(void) {
-    return TIM5->CNT;
+// Once per wrap, every ~71.6 min. UIF is checked because the write that
+// clears it can reach TIM5 after the handler returns, which runs it again.
+void TIM5_IRQHandler(void) {
+    if ((TIM5->SR & TIM_SR_UIF) != 0U) {
+        TIM5->SR = ~TIM_SR_UIF;
+        tim5_wraps++;
+    }
+}
+
+uint64_t timebase_micros(void) {
+    // Interrupts off, so the wrap count can't change between the reads
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    uint32_t high = tim5_wraps;
+    uint32_t low = TIM5->CNT;
+    // UIF is still set if TIM5 wrapped since its interrupt last ran, which it
+    // can't while interrupts are off. Count that wrap here, and read the
+    // counter again in case the first read came before it.
+    if ((TIM5->SR & TIM_SR_UIF) != 0U) {
+        high++;
+        low = TIM5->CNT;
+    }
+    __set_PRIMASK(primask);
+    return ((uint64_t)high << 32) | low;
 }

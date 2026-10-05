@@ -329,7 +329,7 @@ class Tools:
 
 TOOLS = Tools()
 
-FUNCTIONS = ["can_init", "Vn200::start(unsigned long)", "HAL_CAN_Init", "HAL_CAN_Start",
+FUNCTIONS = ["can_init", "Vn200::start(unsigned long long)", "HAL_CAN_Init", "HAL_CAN_Start",
              "HAL_IWDG_Init", "HAL_RCC_OscConfig", "console_init", "can_bus_off"]
 RAM_FIELDS = {  # label: expression for gdb
     "rtd": "etc.state.ready_to_drive",
@@ -345,6 +345,7 @@ OTHER_SYMBOLS = {
     "traction_mode": "etc.state.traction_mode",
     "regen_mode": "etc.state.regen_mode",
     "rx_ring": "rx_ring",
+    "tim5_wraps": "tim5_wraps",
 }
 
 GPIO = {"A": 0x40020000, "B": 0x40020400, "C": 0x40020800, "D": 0x40020C00}
@@ -380,8 +381,10 @@ def script(s, out):
         # on both controllers as can_init() starts (at every boot).
         f"cpu WriteWordAt {fn['can_init']:#x} {CAN_BASE[P]:#x} 0x00010000",
         f"cpu WriteWordAt {fn['can_init']:#x} {CAN_BASE[D]:#x} 0x00010000",
-        # TIM5 count the job deadlines start from (Vn200::start(now))
-        f"cpu RecordRegisterAt {fn['Vn200::start(unsigned long)']:#x} 1 @{out}/now0.txt",
+        # Time the job deadlines start from (Vn200::start(now)), 64 bits in r2
+        # (low) and r3 (high)
+        f"cpu RecordRegisterAt {fn['Vn200::start(unsigned long long)']:#x} 2 @{out}/now0.txt",
+        f"cpu RecordRegisterAt {fn['Vn200::start(unsigned long long)']:#x} 3 @{out}/now0_high.txt",
         f"machine EmulateResetFlags @{out}/resets.txt",
         f'machine SampleBytes "{" ".join(f"{k}={v:#x}" for k, v in TOOLS.ram.items())}" {SAMPLE} @{out}/ram.txt',
     ]
@@ -507,7 +510,9 @@ def parse_run(out):
     for line in read_lines(os.path.join(out, "vn200.txt")):
         t, _, rest = line.partition(" ")
         r.vn.append((int(t), rest))
-    r.now0 = [(int(t), int(v)) for t, v in (line.split() for line in read_lines(os.path.join(out, "now0.txt")))]
+    low = [line.split() for line in read_lines(os.path.join(out, "now0.txt"))]
+    high = [line.split() for line in read_lines(os.path.join(out, "now0_high.txt"))]
+    r.now0 = [(int(t), int(v) | int(h) << 32) for (t, v), (_, h) in zip(low, high)]
     r.resets = []
     for line in read_lines(os.path.join(out, "resets.txt")):
         t, _, flags = line.split()
@@ -747,7 +752,7 @@ class Boot:
     def __init__(self, start, end):
         self.start, self.end = start, end
         self.t0 = None       # virtual time main() read 'now' (job deadlines count from it)
-        self.now0 = None     # and the TIM5 count it read
+        self.now0 = None     # and the time it read (timebase_micros())
         self.hello = None
 
 
@@ -1076,6 +1081,16 @@ def check_run(c, s, r, ex):
     c.check(not errors, f"timeline events failed: {errors[:3]}")
 
 
+def check_tim5_wraps(c, s, r, ex):
+    """The timebase counted every TIM5 wrap of the last boot, once"""
+    b = ex.boots[-1]
+    if b.t0 is None:
+        return
+    want = (b.now0 + s.end - b.t0) >> 32
+    got = r.ram_end.get("tim5_wraps")
+    c.check(got == want, f"the timebase counted {got} TIM5 wraps, expected {want}")
+
+
 def check_boots(c, s, r, ex):
     c.check(len(ex.boots) == len(s.boots), f"{len(ex.boots)} boots (resets at {[t / MS for t, _ in r.resets]} ms), "
                                            f"expected {len(s.boots)}")
@@ -1352,7 +1367,7 @@ def traction_updates(s, b):
     """(earliest, latest, Traction state after) for each traction update in a
     boot. An update runs in the pass after the fourth wheel frame arrives."""
     tc = model.Traction()
-    # The loop timer started at construction, before TIM5 ran: TIM5 count 0
+    # The loop timer started at construction, before TIM5 ran: time 0
     restart = (b.t0 - b.now0, b.t0 - b.now0)
     seen = {}
     updates = []
@@ -1362,8 +1377,7 @@ def traction_updates(s, b):
         seen[can_id] = model.wheel_rpm(data[0] | data[1] << 8)
         if len(seen) == 4:
             lo, hi = t, t + REACT
-            # Stopwatch counts in uint32 microseconds
-            tc.update(seen[421], seen[422], seen[423], seen[424], (lo - restart[1]) % 2 ** 32, (hi - restart[0]) % 2 ** 32)
+            tc.update(seen[421], seen[422], seen[423], seen[424], lo - restart[1], hi - restart[0])
             restart = (lo, hi)
             updates.append((lo, hi, {k: set(v) if isinstance(v, set) else v for k, v in tc.frame_options().items()}))
             seen = {}
@@ -1678,12 +1692,14 @@ REGISTERS = [
     ("DMA1_S0PAR", 0x40026018, 0xFFFFFFFF, 0x40005004),                     # UART5_DR
     ("DMA1_S0FCR", 0x40026024, 0x7, 0),                                     # direct mode
     ("NVIC_ISER0", 0xE000E100, 0xFFFFFFFF, bits(11, 19, 20)),               # DMA1_S0, CAN1 TX, RX0
-    ("NVIC_ISER1", 0xE000E104, 0xFFFFFFFF, bits(40 - 32, 52 - 32, 53 - 32, 63 - 32)),  # EXTI15_10, UART4, UART5, CAN2 TX
+    ("NVIC_ISER1", 0xE000E104, 0xFFFFFFFF,
+     bits(40 - 32, 50 - 32, 52 - 32, 53 - 32, 63 - 32)),  # EXTI15_10, TIM5, UART4, UART5, CAN2 TX
     ("NVIC_ISER2", 0xE000E108, 0xFFFFFFFF, bits(64 - 64)),                  # CAN2 RX0
     ("NVIC_IPR2", 0xE000E408, 0xFF000000, 0x50 << 24),                      # IRQ 11: priority 5
     ("NVIC_IPR4", 0xE000E410, 0xFF000000, 0x50 << 24),                      # IRQ 19
     ("NVIC_IPR5", 0xE000E414, 0xFF, 0x50),                                  # IRQ 20
     ("NVIC_IPR10", 0xE000E428, 0xFF, 0x50),                                 # IRQ 40
+    ("NVIC_IPR12", 0xE000E430, 0xFF0000, 0x50 << 16),                       # IRQ 50
     ("NVIC_IPR13", 0xE000E434, 0xFFFF, 0x5050),                             # IRQ 52, 53
     ("NVIC_IPR15", 0xE000E43C, 0xFF000000, 0x50 << 24),                     # IRQ 63
     ("NVIC_IPR16", 0xE000E440, 0xFF, 0x50),                                 # IRQ 64
@@ -1695,6 +1711,7 @@ REGISTERS = [
     ("TIM5_CR1", 0x40000C00, 0x91, 0x1),                                    # counting up
     ("TIM5_PSC", 0x40000C28, 0xFFFF, 89),                                   # 90 MHz / 90
     ("TIM5_ARR", 0x40000C2C, 0xFFFFFFFF, 0xFFFFFFFF),
+    ("TIM5_DIER", 0x40000C0C, 0x5F5F, bits(0)),                             # update interrupt only
     ("IWDG_PR", 0x40003004, 0x7, 4),                                        # /64
     ("IWDG_RLR", 0x40003008, 0xFFF, 124),                                   # 125 counts = 250 ms
     ("DBGMCU_APB1_FZ", 0xE0042008, 0xFFFFFFFF, bits(3, 12)),                # TIM5 and IWDG stop in debug
@@ -2215,8 +2232,9 @@ def scenarios():
     result.append(s)
 
     # TIM5 wraps 1 s after boot, in the middle of a buzzer, an implausibility,
-    # pedal steps, wheel speeds and VN-200 messages
-    s = Scenario("timer_wrap", 2.6, "32-bit microsecond timer wrapping under everything")
+    # pedal steps, wheel speeds and VN-200 messages. The timebase counts the
+    # wrap (check_tim5_wraps), so the 64-bit time just carries on.
+    s = Scenario("timer_wrap", 2.6, "TIM5 wrapping under everything, counted by the timebase")
     s.tim5_start = 2 ** 32 - 1000 * MS
     ready_to_drive(s, 150)                    # buzzer until ~2.3 s
     s.apps(500, 0.3)
@@ -2332,8 +2350,8 @@ def scenarios():
     return result
 
 
-GENERAL = [check_run, check_boots, check_schedule, check_frames, check_forwarding, check_traction,
-           check_vn200, check_imu_frames, check_debug_lines, check_pins, check_ram]
+GENERAL = [check_run, check_boots, check_tim5_wraps, check_schedule, check_frames, check_forwarding,
+           check_traction, check_vn200, check_imu_frames, check_debug_lines, check_pins, check_ram]
 
 
 # --- main ------------------------------------------------------------------------

@@ -94,7 +94,7 @@ if(PARITY_SANITIZE)
     endforeach()
 endif()
 
-# Second run starts just before the 32-bit microsecond counter wraps
+# Second run starts just under 2^32 us, where a 32-bit microsecond count wraps
 foreach(start_us 0 4294000000)
     add_test(NAME etc_parity_${start_us}
         COMMAND ${CMAKE_COMMAND}

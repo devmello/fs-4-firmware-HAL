@@ -8,9 +8,8 @@
 // Section and table numbers refer to the VN-200 ICD for firmware v2.1.0.0
 // (ICD20006-R1).
 //
-// Times are the free-running 32-bit microsecond counter (timebase_micros()).
-// Pass the current time to every call, never an older one than before. All
-// intervals are unsigned differences, so the wrap after ~71 minutes is fine.
+// Times are microseconds from timebase_micros(). Pass the current time to
+// every call, never an older one than before.
 
 #include <cstddef>
 #include <cstdint>
@@ -47,16 +46,16 @@ public:
     explicit Vn200(WriteFn write) : write_fn(write) {}
 
     // Starts the configuration from the first command, also when running
-    void start(uint32_t now_us);
+    void start(uint64_t now_us);
 
     // Bytes from the UART in the order received, any amount per call. Call
     // before poll() in the same pass, so a reply that has arrived isn't
     // taken for a timeout.
-    void feed(const uint8_t *data, size_t len, uint32_t now_us);
+    void feed(const uint8_t *data, size_t len, uint64_t now_us);
 
     // Sends the next command, handles reply timeouts, retries, the backoff
     // and the data timeout
-    void poll(uint32_t now_us);
+    void poll(uint64_t now_us);
 
     // Copies the newest measurement into state and returns true if one
     // arrived since the last call. Otherwise leaves state as it is.
@@ -69,10 +68,8 @@ public:
     bool configured() const { return phase == Phase::RUNNING; }
 
     // now_us of the feed() call that completed the last good packet. Only
-    // meaningful once stats().packets > 0. now - last_packet_us() wraps after
-    // ~71 minutes; configured() goes false DATA_TIMEOUT_US after the last
-    // packet, so check that too.
-    uint32_t last_packet_us() const { return last_packet_time; }
+    // meaningful once stats().packets > 0.
+    uint64_t last_packet_us() const { return last_packet_time; }
 
 private:
     enum class Phase : uint8_t {
@@ -89,10 +86,10 @@ private:
     Phase phase = Phase::IDLE;
     uint8_t step = 0;  // index of the current command
     uint8_t tries = 0; // sends of the current command
-    uint32_t sent_us = 0;
-    uint32_t backoff_start_us = 0;
-    uint32_t last_data_us = 0; // last good packet, or the end of the configuration
-    uint32_t last_packet_time = 0;
+    uint64_t sent_us = 0;
+    uint64_t backoff_start_us = 0;
+    uint64_t last_data_us = 0; // last good packet, or the end of the configuration
+    uint64_t last_packet_time = 0;
 
     // Received bytes scan() hasn't used up. Between calls it's empty or starts
     // with a 0xFA that may begin a packet.
@@ -109,14 +106,14 @@ private:
     Stats counts;
 
     void restart();
-    void send(uint32_t now_us);
-    void command_failed(uint32_t now_us);
-    void command_done(uint32_t now_us);
-    void scan(uint32_t now_us);
-    void skip(uint8_t byte, uint32_t now_us);
-    void decode(const uint8_t *p, uint32_t now_us);
-    void line_byte(uint8_t byte, uint32_t now_us);
-    void handle_line(uint32_t now_us);
+    void send(uint64_t now_us);
+    void command_failed(uint64_t now_us);
+    void command_done(uint64_t now_us);
+    void scan(uint64_t now_us);
+    void skip(uint8_t byte, uint64_t now_us);
+    void decode(const uint8_t *p, uint64_t now_us);
+    void line_byte(uint8_t byte, uint64_t now_us);
+    void handle_line(uint64_t now_us);
 };
 
 #endif

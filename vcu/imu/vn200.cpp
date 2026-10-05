@@ -179,7 +179,7 @@ bool is_command_error(uint32_t code) {
 
 } // namespace
 
-void Vn200::start(uint32_t now_us) {
+void Vn200::start(uint64_t now_us) {
     restart();
     poll(now_us);
 }
@@ -193,7 +193,7 @@ void Vn200::restart() {
     in_line = false;
 }
 
-void Vn200::feed(const uint8_t *data, size_t len, uint32_t now_us) {
+void Vn200::feed(const uint8_t *data, size_t len, uint64_t now_us) {
     size_t i = 0;
     while (i < len) {
         if (phase == Phase::RUNNING) {
@@ -217,7 +217,7 @@ void Vn200::feed(const uint8_t *data, size_t len, uint32_t now_us) {
     }
 }
 
-void Vn200::poll(uint32_t now_us) {
+void Vn200::poll(uint64_t now_us) {
     switch (phase) {
     case Phase::WAIT:
         if (now_us - sent_us >= RESPONSE_TIMEOUT_US) {
@@ -254,7 +254,7 @@ bool Vn200::update_state(VectornavState &state) {
     return true;
 }
 
-void Vn200::send(uint32_t now_us) {
+void Vn200::send(uint64_t now_us) {
     const char *payload = COMMANDS[step];
     size_t len = strlen(payload);
     uint8_t sum = xor8(payload, len);
@@ -279,7 +279,7 @@ void Vn200::send(uint32_t now_us) {
     }
 }
 
-void Vn200::command_failed(uint32_t now_us) {
+void Vn200::command_failed(uint64_t now_us) {
     if (tries >= COMMAND_TRIES) {
         phase = Phase::BACKOFF;
         backoff_start_us = now_us;
@@ -288,7 +288,7 @@ void Vn200::command_failed(uint32_t now_us) {
     }
 }
 
-void Vn200::command_done(uint32_t now_us) {
+void Vn200::command_done(uint64_t now_us) {
     step++;
     tries = 0;
     if (step < COMMAND_COUNT) {
@@ -303,7 +303,7 @@ void Vn200::command_done(uint32_t now_us) {
 // Takes complete packets off the front of pkt and drops bytes that can't
 // start one. A bad header or CRC means the 0xFA wasn't a sync byte, so the
 // search goes on from the byte after it: a real packet may start inside.
-void Vn200::scan(uint32_t now_us) {
+void Vn200::scan(uint64_t now_us) {
     size_t i = 0;
     while (i < pkt_len) {
         size_t avail = pkt_len - i;
@@ -336,12 +336,12 @@ void Vn200::scan(uint32_t now_us) {
 }
 
 // Skipped bytes still go to the line collector, which picks out $VNERR
-void Vn200::skip(uint8_t byte, uint32_t now_us) {
+void Vn200::skip(uint8_t byte, uint64_t now_us) {
     counts.bytes_skipped++;
     line_byte(byte, now_us);
 }
 
-void Vn200::decode(const uint8_t *p, uint32_t now_us) {
+void Vn200::decode(const uint8_t *p, uint64_t now_us) {
     for (size_t k = 0; k < 3; k++) {
         latest.accel[k] = get_float(p + ACCEL + 4 * k);
         latest.ang_rate[k] = get_float(p + GYRO + 4 * k);
@@ -364,7 +364,7 @@ void Vn200::decode(const uint8_t *p, uint32_t now_us) {
 // of the configuration nothing of it is left for scan(). Anything else that
 // isn't printable ASCII drops the line, which gets rid of binary data and of
 // lines too long to be a reply (like the default VNINS output).
-void Vn200::line_byte(uint8_t byte, uint32_t now_us) {
+void Vn200::line_byte(uint8_t byte, uint64_t now_us) {
     if (byte == '$') {
         in_line = true;
         line_len = 0;
@@ -385,7 +385,7 @@ void Vn200::line_byte(uint8_t byte, uint32_t now_us) {
     line[line_len++] = static_cast<char>(byte);
 }
 
-void Vn200::handle_line(uint32_t now_us) {
+void Vn200::handle_line(uint64_t now_us) {
     // <payload>*<checksum>: 2 hex digits for the XOR checksum, 4 for the CRC
     // if register 30 selects it (ICD 1.4, 3.2.5)
     const char *star = static_cast<const char *>(memchr(line, '*', line_len));

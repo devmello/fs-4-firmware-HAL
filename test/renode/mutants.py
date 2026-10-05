@@ -55,6 +55,10 @@ MUTANTS = [
         ("POWERTRAIN_PERIOD_US = 40'000;",
          "POWERTRAIN_PERIOD_US = 50'000;"),
     ]),
+    ('tim5_wrap_not_counted', 'vcu/board/timebase.c', 'TIM5 wraps not counted', [
+        ('        tim5_wraps++;\n',
+         ''),
+    ]),
     ('torque_bytes_swapped', 'vcu/main.cpp', 'torque bytes swapped in the 40 ms 390', [
         ('    // garbage on the bus). Zero here.\n'
          '    uint8_t tpdo_throttle_demand[8] = {0};\n'

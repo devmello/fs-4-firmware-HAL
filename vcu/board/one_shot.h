@@ -10,14 +10,13 @@
 
 // Stand-in for mbed::Timeout without interrupts: attach() arms it and poll(),
 // called every pass of the main loop, runs the callback once the delay is up.
-// Fires up to one loop pass late. Same 32-bit microsecond counter as Stopwatch,
-// so delays have to stay under ~71 minutes.
+// Fires up to one loop pass late.
 class OneShot {
 public:
     void attach(std::function<void()> callback, std::chrono::microseconds delay) {
         fn = std::move(callback);
         start_us = timebase_micros();
-        delay_us = static_cast<uint32_t>(delay.count());
+        delay_us = static_cast<uint64_t>(delay.count());
         armed = true;
     }
 
@@ -32,8 +31,8 @@ public:
 
 private:
     std::function<void()> fn;
-    uint32_t start_us = 0;
-    uint32_t delay_us = 0;
+    uint64_t start_us = 0;
+    uint64_t delay_us = 0;
     bool armed = false;
 };
 

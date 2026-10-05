@@ -68,19 +68,19 @@ constexpr uint32_t DATA_COPY_DELAY_US = 5'000;
 uint8_t data_copy_throttle[8];
 uint8_t data_copy_currents[8];
 bool data_copy_pending = false;
-uint32_t data_copy_at = 0;
+uint64_t data_copy_at = 0;
 
 uint32_t loop_max_us = 0;
 uint32_t loop_count = 0;
 } // namespace
 
 // Fixed-rate deadline check. Skips missed periods instead of bursting.
-static bool period_elapsed(uint32_t now, uint32_t& deadline, uint32_t period) {
-    if (static_cast<int32_t>(now - deadline) < 0) {
+static bool period_elapsed(uint64_t now, uint64_t& deadline, uint32_t period) {
+    if (now < deadline) {
         return false;
     }
     deadline += period;
-    if (static_cast<int32_t>(now - deadline) >= 0) {
+    if (now >= deadline) {
         deadline = now + period;
     }
     return true;
@@ -92,21 +92,21 @@ int main() {
     printf("Hello World!!\n");
     printf("Reset cause: %s\n", board_reset_cause());
 
-    uint32_t now = timebase_micros();
+    uint64_t now = timebase_micros();
     imu.start(now);
 
     // Mbed's call_every() runs a job one period after it's posted
-    uint32_t next_imu = now + IMU_CAN_PERIOD_US;
-    uint32_t next_powertrain = now + POWERTRAIN_PERIOD_US;
-    uint32_t next_etc = now + ETC_CAN_PERIOD_US;
-    uint32_t next_data = now + DATA_PERIOD_US;
-    uint32_t next_debug = now + DEBUG_PRINT_PERIOD_US;
+    uint64_t next_imu = now + IMU_CAN_PERIOD_US;
+    uint64_t next_powertrain = now + POWERTRAIN_PERIOD_US;
+    uint64_t next_etc = now + ETC_CAN_PERIOD_US;
+    uint64_t next_data = now + DATA_PERIOD_US;
+    uint64_t next_debug = now + DEBUG_PRINT_PERIOD_US;
 
     uint32_t rtd_rises_seen = gpio_rtd_button_rises();
 
     while (true) {
         watchdog_refresh();
-        uint32_t pass_start = timebase_micros();
+        uint64_t pass_start = timebase_micros();
 
         // Mbed read one frame per bus per pass. Here the queues are drained.
         can_frame_t rx;
@@ -150,7 +150,7 @@ int main() {
         if (period_elapsed(now, next_powertrain, POWERTRAIN_PERIOD_US)) {
             send_sme_CAN_messages_powertrain();
         }
-        if (data_copy_pending && static_cast<int32_t>(now - data_copy_at) >= 0) {
+        if (data_copy_pending && now >= data_copy_at) {
             data_copy_pending = false;
             can_send(CAN_D, 390, data_copy_throttle, 8);
             can_send(CAN_D, 646, data_copy_currents, 8);
@@ -162,7 +162,8 @@ int main() {
             print_debug();
         }
 
-        uint32_t pass_us = timebase_micros() - pass_start;
+        // Under 250 ms, or the watchdog resets the chip
+        uint32_t pass_us = static_cast<uint32_t>(timebase_micros() - pass_start);
         if (pass_us > loop_max_us) {
             loop_max_us = pass_us;
         }

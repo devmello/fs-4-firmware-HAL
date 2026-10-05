@@ -1,6 +1,6 @@
 // Host tests for the fs-4 ETC port (ETCController, TractionController, the
-// filters) and Stopwatch. The ADC, GPIO and TIM5 counter are replaced with the
-// fakes below, so this builds with any desktop compiler.
+// filters), Stopwatch and OneShot. The ADC, GPIO and timebase are replaced
+// with the fakes below, so this builds with any desktop compiler.
 
 #include <chrono>
 #include <cmath>
@@ -14,19 +14,20 @@
 #include "filtered_analog_in.h"
 #include "gpio.h"
 #include "low_pass_filter.h"
+#include "one_shot.h"
 #include "pins.h"
 #include "stopwatch.h"
 #include "timebase.h"
 #include "traction_control.h"
 
-static uint32_t fake_now_us = 0;
+static uint64_t fake_now_us = 0;
 static float fake_adc[16] = {};         // fraction of full scale, by ADC channel
 static int fake_output[OUT_COUNT] = {}; // last level written, -1 = never
 static int fake_output_writes[OUT_COUNT] = {};
 static bool fake_input[IN_COUNT] = {};
 static uint32_t fake_rtd_rises = 0;
 
-extern "C" uint32_t timebase_micros(void) {
+extern "C" uint64_t timebase_micros(void) {
     return fake_now_us;
 }
 
@@ -541,7 +542,7 @@ static void test_buzzer() {
     reset_fakes();
     ETCController etc = make_etc();
     turn_on_rtd(etc);
-    uint32_t on_at = fake_now_us;
+    uint64_t on_at = fake_now_us;
     CHECK(fake_output[OUT_RTD_BUZZER] == 1);
 
     fake_now_us = on_at + 1999999;
@@ -698,6 +699,12 @@ static void test_traction_control() {
     CHECK(tc.get_raw_derivative() == 0.0f);
     CHECK(tc.get_smoothed_derivative() == 0.0f);
     CHECK(tc.get_integral() == 0.0f);
+
+    // 72 min until the next update, more than 2^32 us: the loop time is all
+    // of it, as with Mbed's 64-bit Timer
+    fake_now_us += 72ull * 60 * 1000000;
+    tc.update(200.0f, 200.0f, 300.0f, 300.0f);
+    CHECK_NEAR(tc.get_loop_time(), 72 * 60.0, 1e-3);
 }
 
 static void test_stopwatch() {
@@ -727,12 +734,54 @@ static void test_stopwatch() {
     fake_now_us += 40;
     CHECK(sw.elapsed_time() == microseconds{40});
 
-    // 32-bit counter wrap
-    Stopwatch wrap;
+    // Across 2^32 us and past it, where a 32-bit microsecond count wraps
+    Stopwatch long_run;
     fake_now_us = 0xFFFFFFF0u;
-    wrap.start();
+    long_run.start();
     fake_now_us += 0x20;
-    CHECK(wrap.elapsed_time() == microseconds{0x20});
+    CHECK(long_run.elapsed_time() == microseconds{0x20});
+    fake_now_us += 0x100000000u;
+    CHECK(long_run.elapsed_time() == microseconds{0x100000020});
+}
+
+static void test_one_shot() {
+    int fired = 0;
+    OneShot shot;
+
+    // Fires once, on the first poll() at or after the delay
+    fake_now_us = 1000;
+    shot.attach([&fired] { fired++; }, std::chrono::milliseconds{2});
+    fake_now_us += 1999;
+    shot.poll();
+    CHECK(fired == 0);
+    fake_now_us += 1;
+    shot.poll();
+    CHECK(fired == 1);
+    fake_now_us += 5000;
+    shot.poll();
+    CHECK(fired == 1);
+
+    // detach() before the delay: never fires
+    shot.attach([&fired] { fired++; }, std::chrono::milliseconds{1});
+    shot.detach();
+    fake_now_us += 2000;
+    shot.poll();
+    CHECK(fired == 1);
+
+    // A delay longer than 2^32 us, started just before 2^32. Cut to 32 bits
+    // it would be ~25 s.
+    const uint64_t attached_at = 0xFFFFFF00u;
+    fake_now_us = attached_at;
+    shot.attach([&fired] { fired++; }, std::chrono::minutes{72});
+    fake_now_us += 60'000'000;
+    shot.poll();
+    CHECK(fired == 1);
+    fake_now_us = attached_at + 72ull * 60 * 1000000 - 1;
+    shot.poll();
+    CHECK(fired == 1);
+    fake_now_us += 1;
+    shot.poll();
+    CHECK(fired == 2);
 }
 
 int main() {
@@ -757,6 +806,7 @@ int main() {
     test_mbb_alive_and_current_limit();
     test_traction_control();
     test_stopwatch();
+    test_one_shot();
 
     if (failures != 0) {
         std::printf("%d check(s) failed\n", failures);

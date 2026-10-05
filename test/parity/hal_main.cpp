@@ -15,9 +15,8 @@ static_assert(parity::PIN_RTD_LIGHT == OUT_RTD_LIGHT && parity::PIN_RTD_BUZZER =
               parity::PIN_SOLENOID == OUT_SOLENOID && parity::PIN_BRAKELIGHT == OUT_BRAKELIGHT &&
               parity::PIN_RTD_BUTTON == IN_RTD_BUTTON);
 
-// TIM5 is 32 bits, so this wraps like the real counter
-extern "C" uint32_t timebase_micros(void) {
-    return static_cast<uint32_t>(parity::now_us);
+extern "C" uint64_t timebase_micros(void) {
+    return parity::now_us;
 }
 
 extern "C" float adc_read(uint32_t channel) {

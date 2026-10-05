@@ -223,11 +223,11 @@ static size_t count_fa(const Bytes &b) {
     return n;
 }
 
-static void feed(Vn200 &vn, const Bytes &b, uint32_t now) {
+static void feed(Vn200 &vn, const Bytes &b, uint64_t now) {
     vn.feed(b.data(), b.size(), now);
 }
 
-static void feed(Vn200 &vn, const std::string &s, uint32_t now) {
+static void feed(Vn200 &vn, const std::string &s, uint64_t now) {
     vn.feed(reinterpret_cast<const uint8_t *>(s.data()), s.size(), now);
 }
 
@@ -237,7 +237,7 @@ static const std::string VNINS = vn_line(
     "-121.12345678,+00045.123,+000.000,+000.000,+000.000,25.0,1.0,0.12");
 
 // Runs the whole configuration against a sensor that echoes every command
-static void configure(Vn200 &vn, uint32_t &now) {
+static void configure(Vn200 &vn, uint64_t &now) {
     size_t first = writes.size();
     vn.start(now);
     for (size_t i = 0; i < COMMAND_COUNT && writes.size() == first + i + 1; i++) {
@@ -258,7 +258,7 @@ static void test_crc_reference() {
 static void test_command_sequence() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 1000;
+    uint64_t now = 1000;
 
     vn.start(now);
     for (size_t i = 0; i < COMMAND_COUNT; i++) {
@@ -325,7 +325,7 @@ static void test_idle_before_start() {
 static void test_replies_among_noise() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 500;
+    uint64_t now = 500;
     vn.start(now);
     CHECK(writes.size() == 1); // $VNASY,0
 
@@ -406,7 +406,7 @@ static void test_replies_among_noise() {
 static void test_vnerr_reply_retries() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 100;
+    uint64_t now = 100;
     vn.start(now);
     feed(vn, echo_of(writes.back()), now += 1000);
     vn.poll(now);
@@ -457,7 +457,7 @@ static void test_vnerr_reply_retries() {
 static void test_reply_timeout_retries() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t t0 = 5000;
+    uint64_t t0 = 5000;
     vn.start(t0);
     CHECK(writes.size() == 1);
 
@@ -471,7 +471,7 @@ static void test_reply_timeout_retries() {
     CHECK(vn.stats().command_timeouts == 1);
 
     // A late reply to the first try answers the second
-    uint32_t now = t0 + REPLY_TIMEOUT + 3000;
+    uint64_t now = t0 + REPLY_TIMEOUT + 3000;
     feed(vn, echo_of(writes[0]), now);
     vn.poll(now);
     CHECK(writes.size() == 3);
@@ -490,7 +490,7 @@ static void test_write_failure_retries() {
     reset_fakes();
     Vn200 vn{fake_write};
     write_ok = false;
-    uint32_t t0 = 0;
+    uint64_t t0 = 0;
     vn.start(t0);
     CHECK(writes.size() == 1);
     CHECK(vn.stats().write_failures == 1);
@@ -511,11 +511,11 @@ static void test_write_failure_retries() {
 static void test_backoff_and_restart() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t t0 = 20'000;
+    uint64_t t0 = 20'000;
     vn.start(t0);
 
     // No reply at all: COMMAND_TRIES sends, then quiet for BACKOFF_US
-    uint32_t t = t0;
+    uint64_t t = t0;
     for (uint32_t i = 1; i < Vn200::COMMAND_TRIES; i++) {
         t += REPLY_TIMEOUT;
         vn.poll(t);
@@ -536,7 +536,7 @@ static void test_backoff_and_restart() {
     CHECK(vn.stats().configs_started == 2);
 
     // A command that keeps getting refused starts the whole sequence over
-    uint32_t now = t + Vn200::BACKOFF_US;
+    uint64_t now = t + Vn200::BACKOFF_US;
     for (size_t i = 0; i < 4; i++) {
         feed(vn, echo_of(writes.back()), now += 1000);
         vn.poll(now);
@@ -561,7 +561,7 @@ static void test_backoff_and_restart() {
 static void test_decode_exact() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 1000;
+    uint64_t now = 1000;
     configure(vn, now);
 
     VectornavState st;
@@ -589,7 +589,7 @@ static void test_decode_exact() {
 static void test_byte_at_a_time() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 0;
+    uint64_t now = 0;
     configure(vn, now);
 
     Bytes p = good_packet(sample(4));
@@ -609,7 +609,7 @@ static void test_byte_at_a_time() {
 static void test_back_to_back() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 0;
+    uint64_t now = 0;
     configure(vn, now);
 
     feed(vn, concat({good_packet(sample(5)), good_packet(sample(6))}), now += 10);
@@ -645,7 +645,7 @@ static void test_garbage_and_chunks() {
                          size_t{128}, size_t{1000}}) {
         reset_fakes();
         Vn200 vn{fake_write};
-        uint32_t now = 0;
+        uint64_t now = 0;
         configure(vn, now);
 
         for (size_t pos = 0; pos < stream.size(); pos += chunk) {
@@ -666,7 +666,7 @@ static void test_garbage_and_chunks() {
 static void test_fa_in_payload_and_garbage() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 0;
+    uint64_t now = 0;
     configure(vn, now);
 
     // 0xFA inside the payload, once followed by the right group byte, once by
@@ -699,7 +699,7 @@ static void test_fa_in_payload_and_garbage() {
 static void test_crc_error_resync() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 0;
+    uint64_t now = 0;
     configure(vn, now);
 
     // One flipped bit, then a good packet right behind it
@@ -754,7 +754,7 @@ static void test_crc_error_resync() {
 static void test_wrong_headers_rejected() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 0;
+    uint64_t now = 0;
     configure(vn, now);
 
     Sample s = sample(16);
@@ -796,7 +796,7 @@ static void test_wrong_headers_rejected() {
 static void test_errors_while_running() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 0;
+    uint64_t now = 0;
     configure(vn, now);
 
     std::string err = vn_line("VNERR,0B");
@@ -814,7 +814,7 @@ static void test_errors_while_running() {
 static void test_packets_ignored_while_configuring() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 0;
+    uint64_t now = 0;
     vn.start(now);
     feed(vn, good_packet(sample(19)), now += 10);
     VectornavState st;
@@ -826,11 +826,11 @@ static void test_packets_ignored_while_configuring() {
 static void test_data_timeout_reconfigures() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 1000;
+    uint64_t now = 1000;
     configure(vn, now);
 
     // No packet at all: counted from the end of the configuration
-    uint32_t done = now;
+    uint64_t done = now;
     vn.poll(done + DATA_TIMEOUT - 1);
     CHECK(vn.configured());
     vn.poll(done + DATA_TIMEOUT);
@@ -860,7 +860,7 @@ static void test_data_timeout_reconfigures() {
     CHECK(matches(st, sample(99)));
 
     // A packet with a bad CRC doesn't count
-    uint32_t last = now;
+    uint64_t last = now;
     Bytes bad = good_packet(sample(1));
     bad[50] ^= 0xFF;
     feed(vn, bad, last + 200'000);
@@ -893,7 +893,7 @@ static void test_data_timeout_reconfigures() {
 static void test_start_while_running() {
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t now = 0;
+    uint64_t now = 0;
     configure(vn, now);
 
     // Half a packet, then start(): it's dropped, not glued to later bytes
@@ -916,27 +916,27 @@ static void test_start_while_running() {
     CHECK(matches(st, sample(21)));
 }
 
-// The microsecond counter wraps every ~71.6 minutes
-static void test_time_wrap() {
-    // Reply timeout across the wrap
+// Times past 2^32 us (~71.6 min), where a 32-bit microsecond count wraps
+static void test_time_past_32_bits() {
+    // Reply timeout across 2^32
     reset_fakes();
     Vn200 vn{fake_write};
-    uint32_t t0 = 0xFFFFFFFFU - 30'000;
+    uint64_t t0 = 0xFFFFFFFFU - 30'000;
     vn.start(t0);
-    vn.poll(t0 + 1); // the deadline has wrapped, the time not yet
+    vn.poll(t0 + 1); // the deadline is past 2^32, the time not yet
     vn.poll(0xFFFFFFFFU);
     CHECK(writes.size() == 1);
-    vn.poll(t0 + REPLY_TIMEOUT - 1); // wrapped
+    vn.poll(t0 + REPLY_TIMEOUT - 1); // past 2^32
     CHECK(writes.size() == 1);
     CHECK(vn.stats().command_timeouts == 0);
     vn.poll(t0 + REPLY_TIMEOUT);
     CHECK(writes.size() == 2);
     CHECK(vn.stats().command_timeouts == 1);
 
-    // Backoff across the wrap
+    // Backoff across 2^32
     reset_fakes();
     Vn200 vb{fake_write};
-    uint32_t t = 0xFFFFFFFFU - 3 * REPLY_TIMEOUT - 500'000;
+    uint64_t t = 0xFFFFFFFFU - 3 * REPLY_TIMEOUT - 500'000;
     vb.start(t);
     for (uint32_t i = 0; i < Vn200::COMMAND_TRIES; i++) {
         t += REPLY_TIMEOUT;
@@ -946,35 +946,35 @@ static void test_time_wrap() {
     vb.poll(t + 1);
     vb.poll(0xFFFFFFFFU);
     CHECK(writes.size() == Vn200::COMMAND_TRIES);
-    vb.poll(t + Vn200::BACKOFF_US - 1); // wrapped
+    vb.poll(t + Vn200::BACKOFF_US - 1); // past 2^32
     CHECK(writes.size() == Vn200::COMMAND_TRIES);
     vb.poll(t + Vn200::BACKOFF_US);
     CHECK(writes.size() == Vn200::COMMAND_TRIES + 1);
     CHECK(vb.stats().configs_started == 2);
 
-    // Packets on both sides of the wrap
+    // Packets on both sides of 2^32
     reset_fakes();
     Vn200 vd{fake_write};
-    uint32_t now = 0xFFFFFFFFU - 300'000;
+    uint64_t now = 0xFFFFFFFFU - 300'000;
     configure(vd, now);
     for (int i = 0; i < 40; i++) {
         feed(vd, good_packet(sample(i)), now += 10'000);
         vd.poll(now);
         CHECK(vd.configured());
     }
-    CHECK(now < 200'000); // wrapped
+    CHECK(now > 0xFFFFFFFFU);
     CHECK(vd.stats().packets == 40);
     CHECK(vd.stats().data_timeouts == 0);
 
-    // Data timeout across the wrap
+    // Data timeout across 2^32
     reset_fakes();
     Vn200 ve{fake_write};
     now = 0xFFFFFFFFU - 100'000;
     configure(ve, now);
-    uint32_t last = 0xFFFFFFF0U;
+    uint64_t last = 0xFFFFFFF0U;
     feed(ve, good_packet(sample(31)), last);
     ve.poll(last);
-    ve.poll(last + DATA_TIMEOUT - 1); // wrapped
+    ve.poll(last + DATA_TIMEOUT - 1); // past 2^32
     CHECK(ve.configured());
     ve.poll(last + DATA_TIMEOUT);
     CHECK(!ve.configured());
@@ -1004,7 +1004,7 @@ int main() {
     test_packets_ignored_while_configuring();
     test_data_timeout_reconfigures();
     test_start_while_running();
-    test_time_wrap();
+    test_time_past_32_bits();
 
     if (failures != 0) {
         std::printf("%d check(s) failed\n", failures);
