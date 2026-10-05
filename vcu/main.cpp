@@ -25,7 +25,9 @@ AdcInput steering_position{ADC_CH_STEERING};
 InputPin bspd_fault{IN_BSPD_FAULT};
 InputPin bspd_shutdown_out{IN_BSPD_SHUTDOWN};
 
-Vn200 imu{imu_uart_write};
+void print_imu_event(Vn200::Event event, uint8_t code);
+
+Vn200 imu{imu_uart_write, print_imu_event};
 
 ETCController etc{ADC_CH_APPS1, ADC_CH_APPS2, ADC_CH_BPPS, ADC_CH_FRONT_BSE, ADC_CH_REAR_BSE,
                   IN_RTD_BUTTON, OUT_RTD_LIGHT, OUT_RTD_BUZZER, OUT_SOLENOID, OUT_BRAKELIGHT};
@@ -453,7 +455,39 @@ void send_sync() {
     can_send(CAN_P, 0x80, nullptr, 0);
 }
 
-// Not in the Mbed build, which only printed "Hello World!!". Twice a second on
+// The Mbed build's VectorNav wrapper printed its setup steps and each async
+// error. Same lines here, as the driver gets there; the SDK's error numbers
+// for a missing reply. The setup is retried, so they can come again.
+void print_imu_event(Vn200::Event event, uint8_t code) {
+    switch (event) {
+    case Vn200::Event::MODEL:
+        printf("Connected to sensor!\n");
+        printf("Sensor Model Number: %s\n", imu.model());
+        printf("baud: %lu\n", (unsigned long)IMU_UART_BAUD);
+        break;
+    case Vn200::Event::CONFIGURED:
+        printf("Binary output messages configured.\n");
+        break;
+    case Vn200::Event::COMMAND_ERROR:
+        printf("VN: Error %u (%s) in reply to a setup command\n", code, Vn200::error_name(code));
+        break;
+    case Vn200::Event::BACKOFF:
+        if (code == 0) {
+            printf("VN: Error 303 (ResponseTimeout), setup tried again in 1 s\n");
+        } else {
+            printf("VN: Error %u (%s), setup tried again in 1 s\n", code, Vn200::error_name(code));
+        }
+        break;
+    case Vn200::Event::DATA_TIMEOUT:
+        printf("VN: no data for 500 ms, setting the sensor up again\n");
+        break;
+    case Vn200::Event::SENSOR_ERROR:
+        printf("Received async error: %s\n", Vn200::error_name(code));
+        break;
+    }
+}
+
+// Not in the Mbed build, which printed the lines above and "Hello World!!". Twice a second on
 // the ST-LINK's serial port, two lines: the ETC, then CAN, IMU and loop health.
 void print_debug() {
     printf("APPS %.3f %.3f V | BPPS %.3f V | BSE %.3f %.3f V | torque %d | RTD %d EN %d | "

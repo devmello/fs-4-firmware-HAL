@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "vn200.h"
@@ -33,6 +34,7 @@ static const char *const EXPECTED[] = {
     "$VNWRG,76,0,0,00*5B\r\n",
     "$VNWRG,77,0,0,00*5A\r\n",
     "$VNWRG,75,2,8,34,0600,0002,000A*0C\r\n",
+    "$VNRRG,01*72\r\n",
     "$VNASY,1*4E\r\n",
 };
 constexpr size_t COMMAND_COUNT = sizeof(EXPECTED) / sizeof(EXPECTED[0]);
@@ -96,8 +98,14 @@ static std::string vn_line_crc(const std::string &payload) {
     return "$" + payload + "*" + sum + "\r\n";
 }
 
-// The sensor's echo of a command is the command itself (ICD 1.3)
+constexpr const char *MODEL = "VN-200T-CR";
+
+// The sensor's echo of a command is the command itself (ICD 1.3). A register
+// read also carries the value.
 static std::string echo_of(const std::string &command) {
+    if (command == "$VNRRG,01*72\r\n") {
+        return vn_line(std::string("VNRRG,01,") + MODEL);
+    }
     return command;
 }
 
@@ -389,9 +397,13 @@ static void test_replies_among_noise() {
     vn.poll(now);
     CHECK(writes.size() == 6);
     CHECK(writes[5] == EXPECTED[5]);
+    feed(vn, echo_of(writes[5]), now += 1000);
+    vn.poll(now);
+    CHECK(writes.size() == 7);
+    CHECK(writes[6] == EXPECTED[6]);
 
     // The last reply and the first packet in one chunk
-    Bytes last = concat({bytes_of(echo_of(writes[5])), good_packet(sample(3))});
+    Bytes last = concat({bytes_of(echo_of(writes[6])), good_packet(sample(3))});
     feed(vn, last, now += 1000);
     CHECK(vn.configured());
     CHECK(vn.stats().packets == 1);
@@ -447,6 +459,10 @@ static void test_vnerr_reply_retries() {
     vn.poll(now);
     CHECK(writes.size() == 8);
     CHECK(writes[7] == EXPECTED[5]);
+    feed(vn, echo_of(writes.back()), now += 1000);
+    vn.poll(now);
+    CHECK(writes.size() == 9);
+    CHECK(writes[8] == EXPECTED[6]);
     feed(vn, echo_of(writes.back()), now += 1000);
     vn.poll(now);
     CHECK(vn.configured());
@@ -811,6 +827,79 @@ static void test_errors_while_running() {
     CHECK(vn.configured());
 }
 
+// Events, in order, for the console
+static std::vector<std::pair<Vn200::Event, uint8_t>> events;
+
+static void record_event(Vn200::Event event, uint8_t code) {
+    events.emplace_back(event, code);
+}
+
+static void test_events() {
+    using E = Vn200::Event;
+    using List = std::vector<std::pair<E, uint8_t>>;
+    reset_fakes();
+    events.clear();
+    Vn200 vn{fake_write, record_event};
+    CHECK(std::string(vn.model()).empty());
+
+    // No reply at all: one BACKOFF with code 0, nothing per try
+    uint64_t now = 1000;
+    vn.start(now);
+    for (uint32_t i = 0; i < Vn200::COMMAND_TRIES; i++) {
+        vn.poll(now += REPLY_TIMEOUT);
+    }
+    CHECK(events == (List{{E::BACKOFF, 0}}));
+
+    // A refused command, an async error during the setup, then the model and
+    // the end of the setup
+    events.clear();
+    vn.poll(now += Vn200::BACKOFF_US);
+    feed(vn, echo_of(writes.back()), now += 1000);
+    vn.poll(now);
+    feed(vn, vn_line("VNERR,0C"), now += 1000);
+    vn.poll(now);
+    feed(vn, vn_line("VNERR,0A"), now += 1000);
+    vn.poll(now);
+    while (!vn.configured() && writes.size() < 30) {
+        feed(vn, echo_of(writes.back()), now += 1000);
+        vn.poll(now);
+    }
+    CHECK(events == (List{{E::COMMAND_ERROR, 0x0C}, {E::SENSOR_ERROR, 0x0A}, {E::MODEL, 0}, {E::CONFIGURED, 0}}));
+    CHECK(std::string(vn.model()) == MODEL);
+
+    // While running: an async error, then the data timeout
+    events.clear();
+    feed(vn, concat({good_packet(sample(1)), bytes_of(vn_line("VNERR,0B"))}), now += 10);
+    vn.poll(now);
+    vn.poll(now + DATA_TIMEOUT);
+    CHECK(events == (List{{E::SENSOR_ERROR, 0x0B}, {E::DATA_TIMEOUT, 0}}));
+
+    // A refused command three times: BACKOFF carries its code
+    events.clear();
+    now += DATA_TIMEOUT;
+    for (uint32_t i = 0; i < Vn200::COMMAND_TRIES; i++) {
+        feed(vn, vn_line("VNERR,08"), now += 1000);
+        vn.poll(now);
+    }
+    CHECK(events == (List{{E::COMMAND_ERROR, 0x08}, {E::COMMAND_ERROR, 0x08}, {E::COMMAND_ERROR, 0x08},
+                          {E::BACKOFF, 0x08}}));
+
+    // A model reply without the value leaves the model empty
+    reset_fakes();
+    Vn200 bare{fake_write};
+    now = 0;
+    bare.start(now);
+    while (writes.size() < COMMAND_COUNT) {
+        feed(bare, writes.back(), now += 1000);
+        bare.poll(now);
+    }
+    CHECK(std::string(bare.model()).empty());
+
+    CHECK(std::string(Vn200::error_name(0x0B)) == "OutputBufferOverflow");
+    CHECK(std::string(Vn200::error_name(0xFF)) == "ErrorBufferOverflow");
+    CHECK(std::string(Vn200::error_name(0x42)) == "Unknown");
+}
+
 static void test_packets_ignored_while_configuring() {
     reset_fakes();
     Vn200 vn{fake_write};
@@ -1001,6 +1090,7 @@ int main() {
     test_crc_error_resync();
     test_wrong_headers_rejected();
     test_errors_while_running();
+    test_events();
     test_packets_ignored_while_configuring();
     test_data_timeout_reconfigures();
     test_start_while_running();

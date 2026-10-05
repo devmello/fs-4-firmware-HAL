@@ -11,6 +11,8 @@ extern "C" {
 
 // UART5 to the VectorNav VN-200: PC12 (TX), PD2 (RX), 115200 8N1. RX runs
 // continuously by circular DMA into a ring buffer, TX by interrupt.
+#define IMU_UART_BAUD 115200U
+
 void imu_uart_init(void);
 
 // Copies out the bytes received since the last call, up to max. Call every

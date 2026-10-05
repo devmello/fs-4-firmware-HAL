@@ -13,7 +13,7 @@
 //   $VNWRG,07,<Hz>            ASCII async output rate
 //   $VNWRG,75|76|77,<mode>,<divisor>,<groups>,<type words...>
 //                             binary outputs 1-3 (ICD 3.2.7-3.2.9, A.1.1)
-//   $VNRRG,<reg>              reads the same registers back
+//   $VNRRG,<reg>              reads the same registers back, and 01 (model)
 //   $VNWNV                    accepted, nothing saved
 // Binary messages can carry IMU Accel, IMU AngularRate, Attitude Ypr, INS
 // PosLla and INS VelBody (the fields the VCU uses); asking for any other field
@@ -377,6 +377,9 @@ namespace Antmicro.Renode.Testing
             }
             switch(register)
             {
+            case 1:
+                Reply("VNRRG,01,VN-200T-CR");
+                return;
             case 6:
                 Reply($"VNRRG,06,{asciiType}");
                 return;

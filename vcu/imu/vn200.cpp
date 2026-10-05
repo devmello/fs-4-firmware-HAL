@@ -24,9 +24,11 @@ constexpr const char *COMMANDS[] = {
     // RateDivisor 8 = 800 Hz / 8 = 100 Hz, then the group byte and the type
     // words of HEADER below, in hex
     "VNWRG,75,2,8,34,0600,0002,000A",
-    "VNASY,1", // resume
+    "VNRRG,01", // model number (register 1), for the console like the Mbed build
+    "VNASY,1",  // resume
 };
 constexpr size_t COMMAND_COUNT = sizeof(COMMANDS) / sizeof(COMMANDS[0]);
+constexpr size_t MODEL_STEP = 5; // VNRRG,01
 
 constexpr size_t longest_command() {
     size_t longest = 0;
@@ -179,6 +181,31 @@ bool is_command_error(uint32_t code) {
 
 } // namespace
 
+const char *Vn200::error_name(uint8_t code) {
+    switch (code) {
+    case 0x01: return "HardFault";
+    case 0x02: return "SerialBufferOverflow";
+    case 0x03: return "InvalidChecksum";
+    case 0x04: return "InvalidCommand";
+    case 0x05: return "NotEnoughParameters";
+    case 0x06: return "TooManyParameters";
+    case 0x07: return "InvalidParameter";
+    case 0x08: return "InvalidRegister";
+    case 0x09: return "UnauthorizedAccess";
+    case 0x0A: return "WatchdogReset";
+    case 0x0B: return "OutputBufferOverflow";
+    case 0x0C: return "InsufficientBaudRate";
+    case 0xFF: return "ErrorBufferOverflow";
+    default: return "Unknown";
+    }
+}
+
+void Vn200::emit(Event event, uint8_t code) {
+    if (event_fn != nullptr) {
+        event_fn(event, code);
+    }
+}
+
 void Vn200::start(uint64_t now_us) {
     restart();
     poll(now_us);
@@ -222,6 +249,7 @@ void Vn200::poll(uint64_t now_us) {
     case Phase::WAIT:
         if (now_us - sent_us >= RESPONSE_TIMEOUT_US) {
             counts.command_timeouts++;
+            fail_code = 0;
             command_failed(now_us);
         }
         break;
@@ -233,6 +261,7 @@ void Vn200::poll(uint64_t now_us) {
     case Phase::RUNNING:
         if (now_us - last_data_us >= DATA_TIMEOUT_US) {
             counts.data_timeouts++;
+            emit(Event::DATA_TIMEOUT);
             restart();
         }
         break;
@@ -283,6 +312,7 @@ void Vn200::command_failed(uint64_t now_us) {
     if (tries >= COMMAND_TRIES) {
         phase = Phase::BACKOFF;
         backoff_start_us = now_us;
+        emit(Event::BACKOFF, fail_code);
     } else {
         phase = Phase::SEND;
     }
@@ -298,6 +328,7 @@ void Vn200::command_done(uint64_t now_us) {
     phase = Phase::RUNNING;
     counts.configs_done++;
     last_data_us = now_us;
+    emit(Event::CONFIGURED);
 }
 
 // Takes complete packets off the front of pkt and drops bytes that can't
@@ -415,14 +446,32 @@ void Vn200::handle_line(uint64_t now_us) {
         counts.last_error = static_cast<uint8_t>(code);
         if (phase == Phase::WAIT && is_command_error(code)) {
             counts.command_errors++;
+            fail_code = counts.last_error;
+            emit(Event::COMMAND_ERROR, fail_code);
             command_failed(now_us);
         } else {
             counts.sensor_errors++;
+            emit(Event::SENSOR_ERROR, counts.last_error);
         }
         return;
     }
 
     if (phase == Phase::WAIT && is_reply_to(COMMANDS[step], line, len)) {
+        if (step == MODEL_STEP) {
+            // VNRRG,01,<model>: the rest of the line, cut to MODEL_SIZE
+            const char *model;
+            size_t model_len;
+            model_len = 0;
+            if (get_field(line, len, 2, model, model_len)) {
+                model_len = static_cast<size_t>(line + len - model);
+            }
+            if (model_len > MODEL_SIZE) {
+                model_len = MODEL_SIZE;
+            }
+            memcpy(model_name, model, model_len);
+            model_name[model_len] = '\0';
+            emit(Event::MODEL);
+        }
         command_done(now_us);
     }
 }

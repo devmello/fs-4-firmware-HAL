@@ -152,8 +152,12 @@ VN_COMMANDS = [
     "$VNWRG,76,0,0,00*5B",
     "$VNWRG,77,0,0,00*5A",
     "$VNWRG,75,2,8,34,0600,0002,000A*0C",
+    "$VNRRG,01*72",
     "$VNASY,1*4E",
 ]
+VN_MODEL = "VN-200T-CR"  # FakeVN200's answer to $VNRRG,01
+# Replies that aren't the echo of their command
+VN_REPLIES = {"$VNRRG,01*72": f"$VNRRG,01,{VN_MODEL}*31"}
 
 # Renode warnings that are expected: the flash cache bits aren't modelled
 ALLOWED_WARNINGS = [
@@ -1461,12 +1465,12 @@ def check_vn200(c, s, r, ex):
                 vb.configs.append(t)
             tries += 1
             answers = [(done, reply) for done, reply in replies if done > t and (
-                reply == line or (reply.startswith("$VNERR,") and int(reply[7:9], 16) in COMMAND_ERRORS))]
+                reply == VN_REPLIES.get(line, line) or (reply.startswith("$VNERR,") and int(reply[7:9], 16) in COMMAND_ERRORS))]
             answer = answers[0] if answers else None
             timeout = t + VN_RESPONSE
             if answer and answer[0] + PASS_MAX < timeout - PASS_MAX:
                 done, reply = answer
-                if reply != line:
+                if reply != VN_REPLIES.get(line, line):
                     due = (done - 50, done + REACT)
                     if tries == 3:
                         due = (done + VN_BACKOFF - 50, done + VN_BACKOFF + REACT + PASS_MAX)
@@ -1529,10 +1533,54 @@ def check_imu_frames(c, s, r, ex):
                     c.count("IMU frames with data")
 
 
+# Lines print_imu_event() prints, as the Mbed build's VectorNav wrapper did
+IMU_LINE = re.compile(r"Connected to sensor!$|Sensor Model Number: |baud: |Binary output messages configured\.$|"
+                      r"Received async error: |VN: ")
+VN_ERROR_NAMES = {0x01: "HardFault", 0x02: "SerialBufferOverflow", 0x03: "InvalidChecksum", 0x04: "InvalidCommand",
+                  0x05: "NotEnoughParameters", 0x06: "TooManyParameters", 0x07: "InvalidParameter",
+                  0x08: "InvalidRegister", 0x09: "UnauthorizedAccess", 0x0A: "WatchdogReset",
+                  0x0B: "OutputBufferOverflow", 0x0C: "InsufficientBaudRate", 0xFF: "ErrorBufferOverflow"}
+
+
+def check_imu_console(c, s, r, ex):
+    """The IMU's console lines: the model and "configured" for each completed
+    setup, one line per $VNERR the driver got, with its name"""
+    for b in ex.running:
+        vb = ex.vn.get(id(b))
+        if vb is None:
+            continue
+        lines = [line for t, line in r.uart if b.start <= t < b.end and IMU_LINE.match(line)]
+        near_end = any(z > b.end - REACT for z, _ in vb.running) or any(d > b.end - REACT for d, _ in vb.errors)
+        configured = lines.count("Binary output messages configured.")
+        c.check(configured == len(vb.running) or (near_end and configured == len(vb.running) - 1),
+                f"{configured} 'configured' lines in the boot at {b.start / MS:.0f} ms, expected {len(vb.running)}")
+        for i, line in enumerate(lines):
+            if line == "Binary output messages configured.":
+                c.check(lines[max(0, i - 3):i] == ["Connected to sensor!", f"Sensor Model Number: {VN_MODEL}",
+                                                   "baud: 115200"],
+                        f"before {line!r}: {lines[max(0, i - 3):i]}, expected the model lines")
+        errors = []
+        for line in lines:
+            m = re.fullmatch(r"Received async error: (\w+)|VN: Error \d+ \((\w+)\) in reply to a setup command", line)
+            if m:
+                errors.append(m.group(1) or m.group(2))
+            else:
+                c.check(re.fullmatch(r"Connected to sensor!|Sensor Model Number: .*|baud: 115200|"
+                                     r"Binary output messages configured\.|"
+                                     r"VN: Error (303 \(ResponseTimeout\)|\d+ \(\w+\)), setup tried again in 1 s|"
+                                     r"VN: no data for 500 ms, setting the sensor up again", line),
+                        f"IMU console line {line!r}")
+        want = [VN_ERROR_NAMES.get(code, "Unknown") for _, code in vb.errors]
+        c.check(errors == want or (near_end and errors == want[:len(errors)]),
+                f"IMU error lines {errors}, expected {want}")
+        c.count("IMU console lines", len(lines))
+
+
 def check_debug_lines(c, s, r, ex):
     """Two lines every 500 ms, each value against the model"""
     for b in ex.running:
-        lines = [(t, line) for t, line in r.uart if b.start <= t < b.end and not line.startswith(("Hello", "Reset cause"))]
+        lines = [(t, line) for t, line in r.uart if b.start <= t < b.end
+                 and not line.startswith(("Hello", "Reset cause")) and not IMU_LINE.match(line)]
         k = 1
         expected = []
         while b.t0 + k * DEBUG_PERIOD + JOB_LATE < b.end:

@@ -57,7 +57,7 @@ void imu_uart_init(void) {
     HAL_GPIO_Init(GPIOD, &gpio);
 
     huart5.Instance = UART5;
-    huart5.Init.BaudRate = 115200;
+    huart5.Init.BaudRate = IMU_UART_BAUD;
     huart5.Init.WordLength = UART_WORDLENGTH_8B;
     huart5.Init.StopBits = UART_STOPBITS_1;
     huart5.Init.Parity = UART_PARITY_NONE;
