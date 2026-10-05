@@ -301,6 +301,15 @@ void send_etc_CAN_messages() {
 }
 
 void send_sme_CAN_messages_powertrain() {
+    // Mbed always sent the CAN_D copies before this job ran again. A pass
+    // late enough to be due for both sends the waiting copy now, before it's
+    // overwritten.
+    if (data_copy_pending) {
+        data_copy_pending = false;
+        can_send(CAN_D, 390, data_copy_throttle, 8);
+        can_send(CAN_D, 646, data_copy_currents, 8);
+    }
+
     etc.update_mbb_alive();
 
     // Bytes 6-7 and 4-7 were left uninitialized in the Mbed build (stack
