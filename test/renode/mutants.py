@@ -89,6 +89,24 @@ MUTANTS = [
         ('    uint8_t tpdo_max_currents[8] = {0};',
          '    uint8_t tpdo_max_currents[8];', 1),
     ]),
+    ('imu_accel_x10', 'vcu/main.cpp', 'accel X scaled x10', [
+        ('etc_state.vectornav.accel[0] * 100',
+         'etc_state.vectornav.accel[0] * 10'),
+    ]),
+    ('imu_lat_1e6', 'vcu/main.cpp', 'latitude scaled 1e6', [
+        ('pos.lat * 1e7',
+         'pos.lat * 1e6'),
+    ]),
+    ('imu_gyro_rad', 'vcu/main.cpp', 'gyro X sent in rad/s', [
+        ('ang_rate[0] * RAD_TO_DEG * 10',
+         'ang_rate[0] * 10'),
+    ]),
+    ('imu_frame_order', 'vcu/main.cpp', 'IMU frames in another order', [
+        ('    can_send(CAN_D, 976, buf_ypr, 6);\n'
+         '    can_send(CAN_D, 721, buf_latlon, 8);',
+         '    can_send(CAN_D, 721, buf_latlon, 8);\n'
+         '    can_send(CAN_D, 976, buf_ypr, 6);'),
+    ]),
     ('debug_labels', 'vcu/main.cpp', 'debug line labels swapped', [
         ('| RTD %d EN %d |',
          '| EN %d RTD %d |'),
@@ -204,6 +222,22 @@ MUTANTS = [
         ('hiwdg.Init.Reload = 125U - 1U;',
          'hiwdg.Init.Reload = 250U - 1U;'),
     ]),
+    ('dma_normal', 'vcu/board/imu_uart.c', 'UART5 RX DMA not circular', [
+        ('hdma_rx.Init.Mode = DMA_CIRCULAR;',
+         'hdma_rx.Init.Mode = DMA_NORMAL;'),
+    ]),
+    ('dma_channel', 'vcu/board/imu_uart.c', 'UART5 RX DMA on channel 5', [
+        ('hdma_rx.Init.Channel = DMA_CHANNEL_4;',
+         'hdma_rx.Init.Channel = DMA_CHANNEL_5;'),
+    ]),
+    ('dma_no_half', 'vcu/board/imu_uart.c', 'no half transfer interrupt', [
+        ('    hdma_rx.XferHalfCpltCallback = rx_half_done;',
+         '    hdma_rx.XferHalfCpltCallback = NULL;'),
+    ]),
+    ('uart5_baud', 'vcu/board/imu_uart.c', 'UART5 at 57600', [
+        ('huart5.Init.BaudRate = 115200;',
+         'huart5.Init.BaudRate = 57600;'),
+    ]),
     ('no_deadzone_clamp', 'vcu/etc/etc_controller.cpp', "no clamp before the LUT (upstream's out of bounds read)", [
         ('    if (pedal_travel < 0.0f) {\n'
          '        pedal_travel = 0.0f;\n'
@@ -278,6 +312,27 @@ MUTANTS = [
     ('activation_50', 'vcu/etc/traction_control.h', 'traction control from 50 rpm', [
         ('ACTIVATION_RPM = 100.0f;',
          'ACTIVATION_RPM = 50.0f;'),
+    ]),
+    ('vn_timeout_1s', 'vcu/imu/vn200.h', 'VN-200 reconfigured after 1 s without data', [
+        ("DATA_TIMEOUT_US = 500'000;",
+         "DATA_TIMEOUT_US = 1'000'000;"),
+    ]),
+    ('vn_response_200', 'vcu/imu/vn200.h', 'VN-200 command timeout 200 ms', [
+        ("RESPONSE_TIMEOUT_US = 100'000;",
+         "RESPONSE_TIMEOUT_US = 200'000;"),
+    ]),
+    ('vn_checksum', 'vcu/imu/vn200.cpp', 'command checksum summed instead of XORed', [
+        ('        sum ^= static_cast<uint8_t>(s[i]);',
+         '        sum += static_cast<uint8_t>(s[i]);'),
+    ]),
+    ('vn_no_crc', 'vcu/imu/vn200.cpp', 'binary CRC not checked', [
+        ('if (crc16(pkt + i + 1, PACKET_SIZE - 1) != 0) {',
+         'if (false) {'),
+    ]),
+    ('vn_no_data_refresh', 'vcu/imu/vn200.cpp', "good packets don't hold off the data timeout", [
+        ('    last_packet_time = now_us;\n'
+         '    last_data_us = now_us;\n',
+         '    last_packet_time = now_us;\n'),
     ]),
 ]
 

@@ -2,8 +2,8 @@
 // to the STM32 HAL.
 //
 // One loop, no RTOS. The CAN jobs that ran on Mbed's etc_queue and imu_queue
-// threads are deadlines checked every pass, and the RTD button interrupt only
-// counts edges. The VectorNav IMU is on the vcu-imu branch.
+// threads are deadlines checked every pass, the RTD button interrupt only
+// counts edges, and the VectorNav is read from a DMA ring and parsed here.
 
 #include <cstdint>
 #include <cstdio>
@@ -14,14 +14,18 @@
 #include "can.h"
 #include "etc_controller.h"
 #include "gpio.h"
+#include "imu_uart.h"
 #include "pins.h"
 #include "timebase.h"
 #include "traction_control.h"
+#include "vn200.h"
 #include "watchdog.h"
 
 AdcInput steering_position{ADC_CH_STEERING};
 InputPin bspd_fault{IN_BSPD_FAULT};
 InputPin bspd_shutdown_out{IN_BSPD_SHUTDOWN};
+
+Vn200 imu{imu_uart_write};
 
 ETCController etc{ADC_CH_APPS1, ADC_CH_APPS2, ADC_CH_BPPS, ADC_CH_FRONT_BSE, ADC_CH_REAR_BSE,
                   IN_RTD_BUTTON, OUT_RTD_LIGHT, OUT_RTD_BUZZER, OUT_SOLENOID, OUT_BRAKELIGHT};
@@ -38,17 +42,20 @@ void update_wheel_reads();
 void send_etc_CAN_messages();
 void send_sme_CAN_messages_powertrain();
 void send_sme_CAN_messages_data();
-void start_jobs(uint64_t now);
+void send_imu_CAN_messages();
 void update_traction_control();
 void print_debug();
 
 namespace {
+static constexpr float RAD_TO_DEG = 57.2957795f;
+
 static constexpr float STEERING_MIN_VOLTAGE = 0.227;
 static constexpr float STEERING_MAX_VOLTAGE = 1.069;
 static constexpr float STEERING_AVG_VOLTAGE = (STEERING_MAX_VOLTAGE + STEERING_MIN_VOLTAGE) / 2.0f;
 static constexpr float STEERING_VOLTAGE_RANGE = STEERING_MAX_VOLTAGE - STEERING_AVG_VOLTAGE;
 static constexpr float STEERING_MAX_ANGLE = 75.82; // Degrees
 
+constexpr uint32_t IMU_CAN_PERIOD_US = 10'000;
 constexpr uint32_t POWERTRAIN_PERIOD_US = 40'000;
 constexpr uint32_t ETC_CAN_PERIOD_US = 50'000;
 constexpr uint32_t DATA_PERIOD_US = 80'000;
@@ -62,11 +69,6 @@ uint8_t data_copy_throttle[8];
 uint8_t data_copy_currents[8];
 bool data_copy_pending = false;
 uint64_t data_copy_at = 0;
-
-uint64_t next_powertrain = 0;
-uint64_t next_etc = 0;
-uint64_t next_data = 0;
-uint64_t next_debug = 0;
 
 uint32_t loop_max_us = 0;
 uint32_t loop_count = 0;
@@ -91,7 +93,14 @@ int main() {
     printf("Reset cause: %s\n", board_reset_cause());
 
     uint64_t now = timebase_micros();
-    start_jobs(now);
+    imu.start(now);
+
+    // Mbed's call_every() runs a job one period after it's posted
+    uint64_t next_imu = now + IMU_CAN_PERIOD_US;
+    uint64_t next_powertrain = now + POWERTRAIN_PERIOD_US;
+    uint64_t next_etc = now + ETC_CAN_PERIOD_US;
+    uint64_t next_data = now + DATA_PERIOD_US;
+    uint64_t next_debug = now + DEBUG_PRINT_PERIOD_US;
 
     uint32_t rtd_rises_seen = gpio_rtd_button_rises();
 
@@ -107,6 +116,14 @@ int main() {
         while (can_read(CAN_D, &rx)) {
             handle_data_frame(rx);
         }
+
+        uint8_t imu_bytes[128];
+        size_t imu_count;
+        while ((imu_count = imu_uart_read(imu_bytes, sizeof(imu_bytes))) > 0) {
+            imu.feed(imu_bytes, imu_count, pass_start);
+        }
+        imu.poll(pass_start);
+        imu.update_state(etc_state.vectornav);
 
         // Mbed ran this in the button's interrupt. Edges within one pass
         // (~60-110 us) become one call. Bounce slower than that still toggles
@@ -138,6 +155,9 @@ int main() {
             can_send(CAN_D, 390, data_copy_throttle, 8);
             can_send(CAN_D, 646, data_copy_currents, 8);
         }
+        if (period_elapsed(now, next_imu, IMU_CAN_PERIOD_US)) {
+            send_imu_CAN_messages();
+        }
         if (period_elapsed(now, next_debug, DEBUG_PRINT_PERIOD_US)) {
             print_debug();
         }
@@ -149,15 +169,6 @@ int main() {
         }
         loop_count++;
     }
-}
-
-// Mbed's call_every() runs a job one period after it's posted. Not inlined:
-// the Renode tests read the start time from its argument.
-[[gnu::noinline]] void start_jobs(uint64_t now) {
-    next_powertrain = now + POWERTRAIN_PERIOD_US;
-    next_etc = now + ETC_CAN_PERIOD_US;
-    next_data = now + DATA_PERIOD_US;
-    next_debug = now + DEBUG_PRINT_PERIOD_US;
 }
 
 void handle_powertrain_frame(can_frame_t& rx) {
@@ -373,12 +384,77 @@ void update_traction_control() {
     etc_state.tc_mult_factor = etc.traction_controller.update(etc.state.wheel_rpm_fl, etc.state.wheel_rpm_fr, etc.state.wheel_rpm_bl, etc.state.wheel_rpm_br);
 }
 
+/// 100Hz VectorNav Messages
+void send_imu_CAN_messages() {
+    uint8_t buf_accel[6];
+    int16_t accel_f = static_cast<int16_t>(etc_state.vectornav.accel[0] * 100);
+    int16_t accel_r = static_cast<int16_t>(etc_state.vectornav.accel[1] * 100);
+    int16_t accel_d = static_cast<int16_t>(etc_state.vectornav.accel[2] * 100);
+    buf_accel[0] = accel_f & 0xFF;
+    buf_accel[1] = (accel_f >> 8) & 0xFF;
+    buf_accel[2] = accel_r & 0xFF;
+    buf_accel[3] = (accel_r >> 8) & 0xFF;
+    buf_accel[4] = accel_d & 0xFF;
+    buf_accel[5] = (accel_d >> 8) & 0xFF;
+
+    uint8_t buf_ypr[6];
+    int16_t yaw = static_cast<int16_t>(etc_state.vectornav.ypr.yaw * 100);
+    int16_t pitch = static_cast<int16_t>(etc_state.vectornav.ypr.pitch * 100);
+    int16_t roll = static_cast<int16_t>(etc_state.vectornav.ypr.roll * 100);
+    buf_ypr[0] = yaw & 0xFF;
+    buf_ypr[1] = (yaw >> 8) & 0xFF;
+    buf_ypr[2] = pitch & 0xFF;
+    buf_ypr[3] = (pitch >> 8) & 0xFF;
+    buf_ypr[4] = roll & 0xFF;
+    buf_ypr[5] = (roll >> 8) & 0xFF;
+
+    uint8_t buf_latlon[8];
+    int32_t lat = static_cast<int32_t>(etc_state.vectornav.pos.lat * 1e7);
+    int32_t lon = static_cast<int32_t>(etc_state.vectornav.pos.lon * 1e7);
+    buf_latlon[0] = lat & 0xFF;
+    buf_latlon[1] = (lat >> 8) & 0xFF;
+    buf_latlon[2] = (lat >> 16) & 0xFF;
+    buf_latlon[3] = (lat >> 24) & 0xFF;
+    buf_latlon[4] = lon & 0xFF;
+    buf_latlon[5] = (lon >> 8) & 0xFF;
+    buf_latlon[6] = (lon >> 16) & 0xFF;
+    buf_latlon[7] = (lon >> 24) & 0xFF;
+
+    uint8_t buf_gyro[6];
+    int16_t gyro_y = static_cast<int16_t>(etc_state.vectornav.ang_rate[0] * RAD_TO_DEG * 10);
+    int16_t gyro_p = static_cast<int16_t>(etc_state.vectornav.ang_rate[1] * RAD_TO_DEG * 10);
+    int16_t gyro_r = static_cast<int16_t>(etc_state.vectornav.ang_rate[2] * RAD_TO_DEG * 10);
+    buf_gyro[0] = gyro_y & 0xFF;
+    buf_gyro[1] = (gyro_y >> 8) & 0xFF;
+    buf_gyro[2] = gyro_p & 0xFF;
+    buf_gyro[3] = (gyro_p >> 8) & 0xFF;
+    buf_gyro[4] = gyro_r & 0xFF;
+    buf_gyro[5] = (gyro_r >> 8) & 0xFF;
+
+    uint8_t buf_vel[6];
+    int16_t vel_x = static_cast<int16_t>(etc_state.vectornav.vel[0] * 100);
+    int16_t vel_y = static_cast<int16_t>(etc_state.vectornav.vel[1] * 100);
+    int16_t vel_z = static_cast<int16_t>(etc_state.vectornav.vel[2] * 100);
+    buf_vel[0] = vel_x & 0xFF;
+    buf_vel[1] = (vel_x >> 8) & 0xFF;
+    buf_vel[2] = vel_y & 0xFF;
+    buf_vel[3] = (vel_y >> 8) & 0xFF;
+    buf_vel[4] = vel_z & 0xFF;
+    buf_vel[5] = (vel_z >> 8) & 0xFF;
+
+    can_send(CAN_D, 720, buf_accel, 6);
+    can_send(CAN_D, 976, buf_ypr, 6);
+    can_send(CAN_D, 721, buf_latlon, 8);
+    can_send(CAN_D, 977, buf_gyro, 6);
+    can_send(CAN_D, 722, buf_vel, 6);
+}
+
 void send_sync() {
     can_send(CAN_P, 0x80, nullptr, 0);
 }
 
 // Not in the Mbed build, which only printed "Hello World!!". Twice a second on
-// the ST-LINK's serial port, two lines: the ETC, then CAN and loop health.
+// the ST-LINK's serial port, two lines: the ETC, then CAN, IMU and loop health.
 void print_debug() {
     printf("APPS %.3f %.3f V | BPPS %.3f V | BSE %.3f %.3f V | torque %d | RTD %d EN %d | "
            "implaus %d%d%d%d%d\n",
@@ -389,11 +465,16 @@ void print_debug() {
            etc_state.implaus_BPPS_range, etc_state.implaus_BSE_range,
            etc_state.implaus_brake_and_accel);
 
-    printf("CAN P err %u%s drop %lu | CAN D err %u%s drop %lu | loop max %lu us, %lu passes\n",
+    const Vn200::Stats& vn = imu.stats();
+    printf("CAN P err %u%s drop %lu | CAN D err %u%s drop %lu | IMU %s pkts %lu crc %lu "
+           "lost %lu cfg %lu err %02X | loop max %lu us, %lu passes\n",
            can_tx_error_count(CAN_P), can_bus_off(CAN_P) ? " bus-off" : "",
            (unsigned long)(can_tx_dropped(CAN_P) + can_rx_dropped(CAN_P)),
            can_tx_error_count(CAN_D), can_bus_off(CAN_D) ? " bus-off" : "",
            (unsigned long)(can_tx_dropped(CAN_D) + can_rx_dropped(CAN_D)),
+           imu.configured() ? "ok" : "setup", (unsigned long)vn.packets,
+           (unsigned long)vn.crc_errors, (unsigned long)imu_uart_dropped(),
+           (unsigned long)vn.configs_started, vn.last_error,
            (unsigned long)loop_max_us, (unsigned long)loop_count);
     loop_max_us = 0;
     loop_count = 0;

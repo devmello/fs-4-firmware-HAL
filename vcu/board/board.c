@@ -4,6 +4,7 @@
 #include "can.h"
 #include "console.h"
 #include "gpio.h"
+#include "imu_uart.h"
 #include "timebase.h"
 #include "watchdog.h"
 
@@ -77,6 +78,7 @@ void board_init(void) {
     console_init();
     adc_init();
     can_init();
+    imu_uart_init();
 }
 
 const char *board_reset_cause(void) {

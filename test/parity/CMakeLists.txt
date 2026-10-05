@@ -77,6 +77,7 @@ add_executable(etc_parity_hal
 target_include_directories(etc_parity_hal PRIVATE
     ${CMAKE_SOURCE_DIR}/vcu/etc
     ${CMAKE_SOURCE_DIR}/vcu/filters
+    ${CMAKE_SOURCE_DIR}/vcu/imu
     ${CMAKE_SOURCE_DIR}/vcu/board
 )
 if(NOT MSVC)

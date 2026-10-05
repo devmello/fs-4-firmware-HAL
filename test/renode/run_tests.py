@@ -2,7 +2,8 @@
 """
 Runs the fs-4 VCU firmware on an emulated STM32F446 in Renode and checks it
 against a model of what it should do: CAN frames on both buses, the debug
-lines on UART4, the four output pins, the ETC's state in RAM, and how it left the peripheral registers.
+lines on UART4, the four output pins, the VN-200 traffic on UART5, the ETC's
+state in RAM, and how it left the peripheral registers.
 
     python3 test/renode/run_tests.py
     python3 test/renode/run_tests.py --elf build/release/vcu/vcu.elf
@@ -18,25 +19,31 @@ mutants.py runs the suite against deliberately broken builds.
 
 The emulated board (vcu.repl)
   Renode's STM32F4 plus: ADC1 with every channel fed separately
-  (STM32F4_ADC_Patched.cs), and plain memory for the registers Renode doesn't
+  (STM32F4_ADC_Patched.cs), a DMA controller with circular mode and half
+  transfer interrupts wired to UART5 RX on stream 0 channel 4
+  (STM32F4_DMA_Patched.cs), and plain memory for the registers Renode doesn't
   model (ADC common, SYSCFG, DBGMCU). Recorders.cs records CAN frames (both
   buses in one file, so their order is kept), UART lines, the output pins, ETC
   bytes in RAM (polled every 100 us) and the RCC reset flags, plays a timeline
   of inputs (ADC codes, pin levels for the RTD button and BSPD inputs, frames
   received on either bus) and injects faults (mailboxes busy, watchdog not
-  reloaded, a HAL call failing).
+  reloaded, a HAL call failing). FakeVN200.cs is a VN-200 on UART5: it answers
+  the configuration commands like the sensor and then streams binary
+  messages, 82 bytes at 100 Hz, paced at the baud rate.
 
 How the checks work
   Each scenario is a timeline of inputs. From that timeline alone, model.py
-  (a float32 copy of the ETC math, the filters, the LUT, frame packing and
-  traction control) and the code below (the implausibility timers, brake +
-  accel latch, ready to drive, buzzer, job schedule) predict, for any moment, what each output should be. The
+  (a float32 copy of the ETC math, the filters, the LUT, frame packing,
+  traction control and IMU scaling) and the code below (the implausibility
+  timers, brake + accel latch, ready to drive, buzzer, job schedule, VN-200
+  driver states) predict, for any moment, what each output should be. The
   EWMA filters make values depend on loop timing, so predictions are sets
   (see model.py), and moments within a loop pass of a change are "can't say".
   Every recorded frame, debug line, pin change and RAM sample is compared
   with the prediction at its time. The job schedule (deadlines, order when
-  jobs coincide, the 5 ms copies, MBB_Alive), frame layouts, forwarding and
-  the register setup after boot are checked too, and each scenario checks that it exercised what it's for.
+  jobs coincide, the 5 ms copies, MBB_Alive), frame layouts, forwarding, the
+  VN-200 command sequence and its timeouts, and the register setup after boot
+  are checked too, and each scenario checks that it exercised what it's for.
   The model assumes loop passes of 30-400 us (they measure 63-330 us); the
   debug lines' "loop max" is checked against that.
 
@@ -47,13 +54,15 @@ What the emulator can't tell you (check these on the car)
     bit timing, error counters or bus-off (the debug line's error part is
     tested by writing ESR and forcing can_bus_off()). On the chip, three
     mailboxes with TXFP = 0 send the lowest id first, so frames queued
-    together (coinciding jobs) can reach the bus in
+    together (the five IMU frames, coinciding jobs) can reach the bus in
     another order than here. Mailboxes never stay busy on their own; the
     TX queue is tested by making them read busy, and when that ends no TX
     interrupt fires (see can_tx_queue). Received frames are injected at
     back-to-back bus spacing, never faster; FIFO overruns don't happen.
   - UART: the console's characters go out instantly, so its baud rate and a
-    full TX buffer aren't exercised.
+    full TX buffer aren't exercised. UART5 RX is paced at the baud rate, with
+    no framing errors, noise or overruns. The DMA ring never overflows (the
+    loop never stalls 125 ms), so the "lost" count is only seen at 0.
   - ADC: inputs are raw codes, no analog front end, noise or settling.
   - GPIO: output type (push-pull) isn't modelled and pins have no electrical
     behavior. The RTD button doesn't bounce (the board RC filters it); a
@@ -62,6 +71,11 @@ What the emulator can't tell you (check these on the car)
     real timeout is anywhere in about 170-470 ms.
   - Timing: the CPU runs a flat 180 instructions per us, so loop times are
     close but not exact, and the EWMA filters see different time steps.
+  - The VN-200 is a model written from the driver's view of ICD 1.3 (echo with
+    checksum, $VNERR codes as two hex digits, binary layout and CRC). The real
+    sensor's reply format and timing, its error codes (hex or decimal), what
+    it does with VNWRG,76/77 "0,0,00", and whether it refuses register 75
+    while VNINS is still on need the bench.
 """
 
 import argparse
@@ -100,6 +114,9 @@ SETTLE_TORQUE = 150 * MS  # plus the 40 Hz torque filter after them
 IMPLAUS = 101 * MS     # flag after "> 100" whole ms
 BUZZER = 2000 * MS
 COPY_DELAY = 5 * MS
+VN_RESPONSE = 100 * MS
+VN_BACKOFF = 1000 * MS
+VN_DATA_TIMEOUT = 500 * MS
 
 P, D = "P", "D"  # CAN_P = CAN1 500k, CAN_D = CAN2 1M
 
@@ -109,7 +126,10 @@ ETC_CHANNELS = (APPS1, APPS2, BPPS, FRONT_BSE, REAR_BSE)
 
 # Frames the VCU sends
 THROTTLE, CURRENTS, PEDALS, STATUS, TRACTION = 390, 646, 402, 403, 660
-DLC = {THROTTLE: 8, CURRENTS: 8, PEDALS: 8, STATUS: 8, TRACTION: 8}
+ACCEL, YPR, LATLON, GYRO, VEL = 720, 976, 721, 977, 722
+IMU_IDS = (ACCEL, YPR, LATLON, GYRO, VEL)
+DLC = {THROTTLE: 8, CURRENTS: 8, PEDALS: 8, STATUS: 8, TRACTION: 8,
+       ACCEL: 6, YPR: 6, LATLON: 8, GYRO: 6, VEL: 6}
 
 # Frames it handles
 BATTERY, SPEED, TRAY, SME_TEMP, MODES = 913, 1154, 1216, 1666, 432
@@ -121,17 +141,31 @@ JOBS = [  # name, period, frames (bus, id)
     ("data80", 80 * MS, [(D, THROTTLE), (D, TRACTION), (D, CURRENTS)]),
     ("etc50", 50 * MS, [(D, PEDALS), (D, STATUS)]),
     ("pt40", 40 * MS, [(P, THROTTLE), (P, CURRENTS)]),
+    ("imu10", 10 * MS, [(D, i) for i in IMU_IDS]),
 ]
 DEBUG_PERIOD = 500 * MS
+
+# VN-200 commands with their checksums, worked out by hand from ICD 1.4.2
+VN_COMMANDS = [
+    "$VNASY,0*4F",
+    "$VNWRG,06,0*6C",
+    "$VNWRG,76,0,0,00*5B",
+    "$VNWRG,77,0,0,00*5A",
+    "$VNWRG,75,2,8,34,0600,0002,000A*0C",
+    "$VNASY,1*4E",
+]
 
 # Renode warnings that are expected: the flash cache bits aren't modelled
 ALLOWED_WARNINGS = [
     re.compile(r"Translation cache size"),
     re.compile(r"flash_controller: Unhandled write to offset 0x0\. Unhandled bits: \[(9|10)\]"),
 ]
-# and in scenarios with a reset: the watchdog's own message
+# and in scenarios with a reset: the watchdog's own message, and the UART
+# model flushing bytes still on their way from the sensor when its baud rate
+# register resets (they're thrown away right after)
 RESET_WARNINGS = [
     re.compile(r"iwdg: Watchdog reset triggered"),
+    re.compile(r"uart5: Unknown baud rate, couldn't trigger the idle line interrupt"),
 ]
 
 DEBUG_LINE_1 = re.compile(
@@ -139,6 +173,7 @@ DEBUG_LINE_1 = re.compile(
     r"torque (-?\d+) \| RTD ([01]) EN ([01]) \| implaus ([01])([01])([01])([01])([01])$")
 DEBUG_LINE_2 = re.compile(
     r"CAN P err (\d+)( bus-off)? drop (\d+) \| CAN D err (\d+)( bus-off)? drop (\d+) \| "
+    r"IMU (ok|setup) pkts (\d+) crc (\d+) lost (\d+) cfg (\d+) err ([0-9A-F]{2}) \| "
     r"loop max (\d+) us, (\d+) passes$")
 
 
@@ -176,10 +211,11 @@ class Scenario:
     """A timeline of inputs, what to record, and extra checks. Times passed to
     the helpers are in ms."""
 
-    def __init__(self, name, seconds, about, registers=False, boots=("power on",)):
+    def __init__(self, name, seconds, about, imu="on", registers=False, boots=("power on",)):
         self.name = name
         self.about = about
         self.end = int(round(seconds * 1e6))
+        self.imu = imu                  # "on", or "off": no sensor answering
         self.registers = registers
         self.boots = boots              # the reset cause each boot should print
         self.events = []                # (us, timeline text)
@@ -243,6 +279,9 @@ class Scenario:
         flags = ("x" if ext else "s") + ("r" if rtr else "d")
         self.events.append((t, f"can {1 if bus == P else 2} {can_id:X} {flags} {data.hex() or '-'}"))
 
+    def imu_command(self, ms, command):
+        self.events.append((self.us(ms), f"imu {command}"))
+
     def wheels(self, ms, fl, fr, bl, br):
         """The four wheel speed frames (rpm), back to back on CAN_D"""
         for n, (can_id, rpm) in enumerate(zip(WHEELS, (fl, fr, bl, br))):
@@ -290,7 +329,7 @@ class Tools:
 
 TOOLS = Tools()
 
-FUNCTIONS = ["can_init", "start_jobs(unsigned long long)", "HAL_CAN_Init", "HAL_CAN_Start",
+FUNCTIONS = ["can_init", "Vn200::start(unsigned long long)", "HAL_CAN_Init", "HAL_CAN_Start",
              "HAL_IWDG_Init", "HAL_RCC_OscConfig", "console_init", "can_bus_off"]
 RAM_FIELDS = {  # label: expression for gdb
     "rtd": "etc.state.ready_to_drive",
@@ -305,6 +344,7 @@ OTHER_SYMBOLS = {
     "drive_mode": "etc.state.drive_mode",
     "traction_mode": "etc.state.traction_mode",
     "regen_mode": "etc.state.regen_mode",
+    "rx_ring": "rx_ring",
     "tim5_wraps": "tim5_wraps",
 }
 
@@ -318,6 +358,8 @@ def script(s, out):
     fn = TOOLS.functions
     lines = [
         f"include @{HERE}/STM32F4_ADC_Patched.cs",
+        f"include @{HERE}/STM32F4_DMA_Patched.cs",
+        f"include @{HERE}/FakeVN200.cs",
         f"include @{HERE}/Recorders.cs",
         'mach create "vcu"',
         f"machine LoadPlatformDescription @{HERE}/vcu.repl",
@@ -339,10 +381,10 @@ def script(s, out):
         # on both controllers as can_init() starts (at every boot).
         f"cpu WriteWordAt {fn['can_init']:#x} {CAN_BASE[P]:#x} 0x00010000",
         f"cpu WriteWordAt {fn['can_init']:#x} {CAN_BASE[D]:#x} 0x00010000",
-        # Time the job deadlines start from (start_jobs(now)), 64 bits in r0
-        # (low) and r1 (high)
-        f"cpu RecordRegisterAt {fn['start_jobs(unsigned long long)']:#x} 0 @{out}/now0.txt",
-        f"cpu RecordRegisterAt {fn['start_jobs(unsigned long long)']:#x} 1 @{out}/now0_high.txt",
+        # Time the job deadlines start from (Vn200::start(now)), 64 bits in r2
+        # (low) and r3 (high)
+        f"cpu RecordRegisterAt {fn['Vn200::start(unsigned long long)']:#x} 2 @{out}/now0.txt",
+        f"cpu RecordRegisterAt {fn['Vn200::start(unsigned long long)']:#x} 3 @{out}/now0_high.txt",
         f"machine EmulateResetFlags @{out}/resets.txt",
         f'machine SampleBytes "{" ".join(f"{k}={v:#x}" for k, v in TOOLS.ram.items())}" {SAMPLE} @{out}/ram.txt',
     ]
@@ -355,6 +397,7 @@ def script(s, out):
     # BTR only reads back in init mode, so grab both as HAL_CAN_Start runs
     for bus in (P, D):
         lines.append(f'cpu RecordWordAt {fn["HAL_CAN_Start"]:#x} {CAN_BASE[bus] + 0x1C:#x} "BTR_{bus}" @{out}/audit.txt')
+    lines.append(f"uart5 AttachFakeVN200 0x40005000 @{out}/vn200.txt")
     for bus, a, b in s.mailbox_holds:
         lines.append(f"can{1 if bus == P else 2} HoldMailboxes {a} {b}")
     for a, b in s.watchdog_blocks:
@@ -370,6 +413,8 @@ def script(s, out):
         lines.append(f"cpu WriteWordAt {fn['console_init']:#x} {TIM5_CNT:#x} {s.tim5_start:#x}")
     lines += s.monitor
     events = sorted(s.events, key=lambda e: e[0])
+    if s.imu == "off":
+        events.insert(0, (0, "imu off"))
     with open(os.path.join(out, "timeline.txt"), "w") as f:
         f.writelines(f"{t} {text}\n" for t, text in events)
     lines += [
@@ -461,6 +506,10 @@ def parse_run(out):
     for line in read_lines(os.path.join(out, "ram.txt")):
         t, name, value = line.split()
         r.ram[name].append((int(t), int(value)))
+    r.vn = []
+    for line in read_lines(os.path.join(out, "vn200.txt")):
+        t, _, rest = line.partition(" ")
+        r.vn.append((int(t), rest))
     low = [line.split() for line in read_lines(os.path.join(out, "now0.txt"))]
     high = [line.split() for line in read_lines(os.path.join(out, "now0_high.txt"))]
     r.now0 = [(int(t), int(v) | int(h) << 32) for (t, v), (_, h) in zip(low, high)]
@@ -607,8 +656,7 @@ class Filtered:
         t0, target, start, _ = self._segment(t)
         if t0 == self.seed_t and start.lo == start.hi == target:
             return model.filter_interval(target, start, 0, 0)
-        return model.filter_interval(target, start, (t - t0 - PASS_MAX) * (1 - model.FILTER_TIME_LOST) * 1e-6,
-                                     (t - t0 + PASS_MAX) * 1e-6)
+        return model.filter_interval(target, start, (t - t0 - PASS_MAX) * 1e-6, (t - t0 + PASS_MAX) * 1e-6)
 
     def volts(self, t):
         return self.state(t).map(model.filtered_volts)
@@ -724,6 +772,7 @@ class Expect:
                 if b.start <= t < b.end and line == "Hello World!!" and b.hello is None:
                     b.hello = t
         self.running = [b for b in self.boots if b.t0 is not None]
+        self.vn = {}  # id(boot): VnBoot, filled in by check_vn200
         for b in self.running:
             self._boot_model(b)
         self._pins()
@@ -1143,10 +1192,10 @@ def check_schedule(c, s, r, ex):
                 f.job = "held"
             elif f.job is None and not (f.bus == D and f.id in FORWARDED):
                 c.check(False, f"unexpected frame {f}")
-        # Order inside a pass: data80, etc50, pt40
+        # Order inside a pass: data80, etc50, pt40, imu10
         by_deadline = {}
         for f in frames:
-            if f.job in ("data80", "etc50", "pt40") and f.at == f.t:
+            if f.job in ("data80", "etc50", "pt40", "imu10") and f.at == f.t:
                 period = dict((n, p) for n, p, _ in JOBS)[f.job]
                 by_deadline.setdefault(b.t0 + f.k * period, []).append(f)
         names = [n for n, _, _ in JOBS]
@@ -1355,6 +1404,131 @@ def check_traction(c, s, r, ex):
                     c.count("660 after an update")
 
 
+class VnBoot:
+    """What the VN-200 driver did in one boot, worked out from the fake
+    sensor's log and checked step by step against the driver's rules"""
+
+    def __init__(self):
+        self.running = []   # (from, to): it was parsing packets
+        self.packets = []   # (done, n) good messages it decoded
+        self.bad = []       # done times of corrupt messages it saw
+        self.configs = []   # times a configuration started
+        self.errors = []    # (done, code) $VNERR lines it got
+
+
+def vn_log(r):
+    """The fake sensor's log: commands it got, replies and messages it sent"""
+    sent = [(t, text[3:]) for t, text in r.vn if text.startswith("rx ")]
+    replies, packets = [], []
+    for t, text in r.vn:
+        if text.startswith("tx "):
+            _, done, line = text.split(" ", 2)
+            replies.append((int(done), line))
+        elif text.startswith("pkt "):
+            parts = text.split()
+            packets.append((t, int(parts[2]), int(parts[4]), "corrupt" in parts))
+    return sent, replies, packets
+
+
+COMMAND_ERRORS = (2, 3, 4, 5, 6, 7, 8, 9, 12)  # ICD table 1.6, answers to a command
+
+
+def check_vn200(c, s, r, ex):
+    """Walks through the commands the driver sent, checking each against
+    Vn200's rules: the next command once the echo is in, a retry after a
+    command error or 100 ms without a reply, a 1 s back off after 3 tries,
+    and a new configuration 500 ms after the last good message. Also works
+    out which messages it decoded, for the IMU frames and the debug line."""
+    sent, replies, packets = vn_log(r)
+    ex.vn = {}
+    for b in ex.running:
+        vb = VnBoot()
+        ex.vn[id(b)] = vb
+        vb.errors = [(done, int(line[7:9], 16)) for done, line in replies
+                     if line.startswith("$VNERR,") and b.start <= done < b.end]
+        mine = [(t, line) for t, line in sent if b.t0 - 10 <= t < b.end]
+        idx = tries = 0
+        due = (b.t0 - 10, b.t0 + REACT)  # start(now) sends the first command at once
+        for n, (t, line) in enumerate(mine):
+            if not c.check(line == VN_COMMANDS[idx], f"VN-200 command {n + 1} after the boot at {b.start / MS:.0f} ms: "
+                                                    f"{line!r}, expected {VN_COMMANDS[idx]!r}"):
+                break
+            if not c.check(due and due[0] <= t <= due[1], f"{line} at {t / MS:.3f} ms, expected "
+                                                          f"{due and due[0] / MS:.3f}-{due and due[1] / MS:.3f} ms"):
+                break
+            c.count("VN-200 commands")
+            if idx == 0 and tries == 0:
+                vb.configs.append(t)
+            tries += 1
+            answers = [(done, reply) for done, reply in replies if done > t and (
+                reply == line or (reply.startswith("$VNERR,") and int(reply[7:9], 16) in COMMAND_ERRORS))]
+            answer = answers[0] if answers else None
+            timeout = t + VN_RESPONSE
+            if answer and answer[0] + PASS_MAX < timeout - PASS_MAX:
+                done, reply = answer
+                if reply != line:
+                    due = (done - 50, done + REACT)
+                    if tries == 3:
+                        due = (done + VN_BACKOFF - 50, done + VN_BACKOFF + REACT + PASS_MAX)
+                        idx = tries = 0
+                    continue
+                idx, tries = idx + 1, 0
+                due = (done - 50, done + REACT)
+                if idx < len(VN_COMMANDS):
+                    continue
+                # Configured: it parses messages until none good comes for 500 ms
+                idx = 0
+                last = (done - 50, done + PASS_MAX)
+                for q, k, d, bad in packets:
+                    if q <= done or not b.start <= q < b.end:
+                        continue
+                    if d >= last[0] + VN_DATA_TIMEOUT:
+                        c.check(d > last[1] + VN_DATA_TIMEOUT + PASS_MAX, f"message {k} at {d / MS:.3f} ms is too "
+                                                                          "close to the 500 ms timeout to say")
+                        break
+                    if bad:
+                        vb.bad.append(d)
+                    else:
+                        vb.packets.append((d, k))
+                        last = (d - 50, d + PASS_MAX)
+                due = (last[0] + VN_DATA_TIMEOUT, last[1] + VN_DATA_TIMEOUT + PASS_MAX)
+                vb.running.append((done + PASS_MAX, min(b.end, due[0])))
+            else:
+                c.check(not answer or answer[0] > timeout + PASS_MAX,
+                        f"reply to {line} at {answer and answer[0] / MS:.3f} ms is too close to its timeout to say")
+                due = (timeout - PASS_MAX, timeout + REACT)
+                if tries == 3:
+                    due = (due[0] + VN_BACKOFF, due[1] + VN_BACKOFF + PASS_MAX)
+                    idx = tries = 0
+        if due and due[1] + 10 * MS < b.end and not any(due[0] <= t <= due[1] for t, _ in mine):
+            c.check(False, f"VN-200: no command at {due[0] / MS:.3f}-{due[1] / MS:.3f} ms")
+
+
+def imu_options(vb, t):
+    """Message numbers the IMU frames at t can carry (None: nothing yet)"""
+    sure = [k for d, k in vb.packets if d + REACT < t]
+    maybe = [k for d, k in vb.packets if t - REACT <= d <= t]
+    options = set(maybe)
+    options.add(sure[-1] if sure else None)
+    return options
+
+
+def check_imu_frames(c, s, r, ex):
+    for b in ex.running:
+        vb = ex.vn.get(id(b))
+        if vb is None:
+            continue
+        for f in r.frames:
+            if f.job != "imu10" or not b.start <= f.t < b.end:
+                continue
+            options = imu_options(vb, f.at)
+            wanted = {model.imu_frames(n)[f.id] for n in options}
+            if c.check(f.data in wanted, f"IMU frame {f} is none of messages {sorted(options, key=str)}"):
+                c.count("IMU frames")
+                if None not in options:
+                    c.count("IMU frames with data")
+
+
 def check_debug_lines(c, s, r, ex):
     """Two lines every 500 ms, each value against the model"""
     for b in ex.running:
@@ -1366,6 +1540,7 @@ def check_debug_lines(c, s, r, ex):
             k += 1
         c.check(len(lines) == 2 * len(expected), f"{len(lines)} debug lines in the boot at {b.start / MS:.0f} ms, "
                                                   f"expected {2 * len(expected)}")
+        vb = ex.vn.get(id(b))
         for due, ((t1, line1), (t2, line2)) in zip(expected, zip(lines[0::2], lines[1::2])):
             c.check(due <= t1 <= due + JOB_LATE and t1 <= t2 <= t1 + JOB_LATE,
                     f"debug lines at {t1 / MS:.3f}/{t2 / MS:.3f} ms, due {due / MS:.3f}")
@@ -1392,9 +1567,24 @@ def check_debug_lines(c, s, r, ex):
                                                          f"expected {(tec_p, off_p, tec_d, off_d)}: {line2!r}")
             c.check((int(m2.group(3)), int(m2.group(6))) == drops, f"CAN drop counts {m2.group(3)}/{m2.group(6)}, "
                                                                    f"expected {drops}: {line2!r}")
-            loop_max, passes = int(m2.group(7)), int(m2.group(8))
+            c.check(int(m2.group(10)) == 0, f"IMU bytes lost: {line2!r}")
+            loop_max, passes = int(m2.group(13)), int(m2.group(14))
             c.check(loop_max <= PASS_MAX, f"loop max {loop_max} us is over the {PASS_MAX} us the checks assume: {line2!r}")
             c.check(DEBUG_PERIOD / 150 <= passes <= DEBUG_PERIOD / 30, f"{passes} passes in 500 ms: {line2!r}")
+            if vb is None:
+                continue
+            running = [any(a <= x < z for a, z in vb.running) for x in (t - REACT, t + REACT)]
+            if running[0] == running[1]:
+                c.check(m2.group(7) == ("ok" if running[0] else "setup"), f"IMU state {m2.group(7)}: {line2!r}")
+            pkts = (sum(1 for d, _ in vb.packets if d + REACT < t), sum(1 for d, _ in vb.packets if d <= t))
+            crcs = (sum(1 for d in vb.bad if d + REACT < t), sum(1 for d in vb.bad if d <= t))
+            configs = (sum(1 for x in vb.configs if x + REACT < t), sum(1 for x in vb.configs if x <= t))
+            errors = [code for d, code in vb.errors if d + REACT < t]
+            maybe_errors = [code for d, code in vb.errors if d <= t]
+            for group, (lo, hi), what in ((8, pkts, "packets"), (9, crcs, "CRC errors"), (11, configs, "configurations")):
+                c.check(lo <= int(m2.group(group)) <= hi, f"IMU {what} {m2.group(group)}, expected {lo}-{hi}: {line2!r}")
+            want = {f"{errors[-1] if errors else 0:02X}", f"{maybe_errors[-1] if maybe_errors else 0:02X}"}
+            c.check(m2.group(12) in want, f"IMU last error {m2.group(12)}, expected {want}: {line2!r}")
 
 
 def check_pins(c, s, r, ex):
@@ -1438,15 +1628,15 @@ def bits(*numbers):
 
 
 # Expected setup after boot: (name, address, mask, value), from board.c,
-# gpio.c, adc.c, can.c, console.c, timebase.c, watchdog.c and
+# gpio.c, adc.c, can.c, console.c, imu_uart.c, timebase.c, watchdog.c and
 # RM0390. Reset values of the untouched pins are Renode's (SWD on PA13-15,
 # PB3-4). Output type (push-pull) isn't modelled, so it isn't checked.
 REGISTERS = [
     ("RCC_CR", 0x40023800, bits(16, 18, 24), bits(16, 24)),                          # HSEON, no bypass, PLLON
     ("RCC_PLLCFGR", 0x40023804, 0x0F437FFF, 8 << 24 | 1 << 22 | 0 << 16 | 180 << 6 | 12),  # Q8 HSE P2 N180 M12
     ("RCC_CFGR", 0x40023808, 0xFCF3, 0b100 << 13 | 0b101 << 10 | 2),                # APB2 /2, APB1 /4, PLL
-    ("RCC_AHB1ENR", 0x40023830, bits(0, 1, 2, 3, 4, 5, 6, 7, 21, 22), bits(0, 1, 2)),  # GPIOA-C
-    ("RCC_APB1ENR", 0x40023840, 0x3FFEC9FF, bits(3, 19, 25, 26, 28)),  # TIM5 UART4 CAN1 CAN2 PWR
+    ("RCC_AHB1ENR", 0x40023830, bits(0, 1, 2, 3, 4, 5, 6, 7, 21, 22), bits(0, 1, 2, 3, 21)),  # GPIOA-D, DMA1
+    ("RCC_APB1ENR", 0x40023840, 0x3FFEC9FF, bits(3, 19, 20, 25, 26, 28)),  # TIM5 UART4 UART5 CAN1 CAN2 PWR
     ("RCC_APB2ENR", 0x40023844, 0x00C77F33, bits(8, 14)),                    # ADC1, SYSCFG
     ("FLASH_ACR", 0x40023C00, 0x10F, 5),                                    # 5 WS, prefetch off
     ("PWR_CR", 0x40007000, 0x3C000, 0x3C000),                               # VOS scale 1, over-drive
@@ -1460,11 +1650,15 @@ REGISTERS = [
     ("GPIOB_AFRL", 0x40020420, 0xFFFFFFFF, 9 << 20 | 9 << 24),               # PB5, PB6 AF9 (CAN2)
     ("GPIOB_AFRH", 0x40020424, 0xFFFFFFFF, 9 << 0 | 9 << 4),                 # PB8, PB9 AF9 (CAN1)
     ("GPIOC_MODER", 0x40020800, 0xFFFFFFFF,
-     0b01 | 0b111111 << 2 | 0b01 << 8 | 0b11 << 10 | 0b10 << 20 | 0b10 << 22),
-    ("GPIOC_OSPEEDR", 0x40020808, 0xFFFFFFFF, 0b11 << 20 | 0b11 << 22),
-    ("GPIOC_PUPDR", 0x4002080C, 0xFFFFFFFF, 0b01 << 20 | 0b01 << 22),      # pull-ups on PC10-11 only
+     0b01 | 0b111111 << 2 | 0b01 << 8 | 0b11 << 10 | 0b10 << 20 | 0b10 << 22 | 0b10 << 24),
+    ("GPIOC_OSPEEDR", 0x40020808, 0xFFFFFFFF, 0b11 << 20 | 0b11 << 22 | 0b10 << 24),
+    ("GPIOC_PUPDR", 0x4002080C, 0xFFFFFFFF, 0b01 << 20 | 0b01 << 22 | 0b01 << 24),  # pull-ups on PC10-12 only
     ("GPIOC_AFRL", 0x40020820, 0xFFFFFFFF, 0),
-    ("GPIOC_AFRH", 0x40020824, 0xFFFFFFFF, 8 << 8 | 8 << 12),              # PC10-11 UART4
+    ("GPIOC_AFRH", 0x40020824, 0xFFFFFFFF, 8 << 8 | 8 << 12 | 8 << 16),     # PC10-11 UART4, PC12 UART5
+    ("GPIOD_MODER", 0x40020C00, 0xFFFFFFFF, 0b10 << 4),
+    ("GPIOD_OSPEEDR", 0x40020C08, 0xFFFFFFFF, 0b10 << 4),
+    ("GPIOD_PUPDR", 0x40020C0C, 0xFFFFFFFF, 0b01 << 4),
+    ("GPIOD_AFRL", 0x40020C20, 0xFFFFFFFF, 8 << 8),                         # PD2 UART5
     ("EXTI_IMR", 0x40013C00, 0x7FFFFF, bits(13)),
     ("EXTI_EMR", 0x40013C04, 0x7FFFFF, 0),
     ("EXTI_RTSR", 0x40013C08, 0x7FFFFF, bits(13)),
@@ -1489,15 +1683,24 @@ REGISTERS = [
     ("UART4_BRR", 0x40004C08, 0xFFFF, 0x187),                               # 115200 at 45 MHz
     ("UART4_CR1", 0x40004C0C, 0xBF3F, bits(2, 3, 13)),                      # RE TE UE, 8N1, OVER16
     ("UART4_CR2", 0x40004C10, 0x3000, 0),
-    ("NVIC_ISER0", 0xE000E100, 0xFFFFFFFF, bits(19, 20)),                   # CAN1 TX, RX0
+    ("UART5_BRR", 0x40005008, 0xFFFF, 0x187),
+    ("UART5_CR1", 0x4000500C, 0xBF3F, bits(2, 3, 13)),
+    ("UART5_CR2", 0x40005010, 0x3000, 0),
+    ("UART5_CR3", 0x40005014, 0xC0, bits(6)),                               # RX by DMA
+    ("DMA1_S0CR", 0x40026010, 0x0FFFFFFF,
+     4 << 25 | 2 << 16 | bits(10, 8, 4, 3, 2, 1, 0)),  # channel 4, high, MINC, CIRC, TC HT TE DME, on
+    ("DMA1_S0PAR", 0x40026018, 0xFFFFFFFF, 0x40005004),                     # UART5_DR
+    ("DMA1_S0FCR", 0x40026024, 0x7, 0),                                     # direct mode
+    ("NVIC_ISER0", 0xE000E100, 0xFFFFFFFF, bits(11, 19, 20)),               # DMA1_S0, CAN1 TX, RX0
     ("NVIC_ISER1", 0xE000E104, 0xFFFFFFFF,
-     bits(40 - 32, 50 - 32, 52 - 32, 63 - 32)),  # EXTI15_10, TIM5, UART4, CAN2 TX
+     bits(40 - 32, 50 - 32, 52 - 32, 53 - 32, 63 - 32)),  # EXTI15_10, TIM5, UART4, UART5, CAN2 TX
     ("NVIC_ISER2", 0xE000E108, 0xFFFFFFFF, bits(64 - 64)),                  # CAN2 RX0
-    ("NVIC_IPR4", 0xE000E410, 0xFF000000, 0x50 << 24),                      # IRQ 19: priority 5
+    ("NVIC_IPR2", 0xE000E408, 0xFF000000, 0x50 << 24),                      # IRQ 11: priority 5
+    ("NVIC_IPR4", 0xE000E410, 0xFF000000, 0x50 << 24),                      # IRQ 19
     ("NVIC_IPR5", 0xE000E414, 0xFF, 0x50),                                  # IRQ 20
     ("NVIC_IPR10", 0xE000E428, 0xFF, 0x50),                                 # IRQ 40
     ("NVIC_IPR12", 0xE000E430, 0xFF0000, 0x50 << 16),                       # IRQ 50
-    ("NVIC_IPR13", 0xE000E434, 0xFF, 0x50),                                 # IRQ 52
+    ("NVIC_IPR13", 0xE000E434, 0xFFFF, 0x5050),                             # IRQ 52, 53
     ("NVIC_IPR15", 0xE000E43C, 0xFF000000, 0x50 << 24),                     # IRQ 63
     ("NVIC_IPR16", 0xE000E440, 0xFF, 0x50),                                 # IRQ 64
     ("SCB_SHPR3", 0xE000ED20, 0xFF000000, 0xF0000000),                      # SysTick priority 15
@@ -1518,6 +1721,9 @@ REGISTERS = [
     ("ADC1_SMPR2", 0x40012010, 0x3FFFFFFF, 3 << 0 | 3 << 3),                # ch 0, 1: 56 cycles
     ("ADC1_SQR1", 0x4001202C, 0xF << 20, 0),                                # 1 conversion
     ("ADC_CCR", 0x40012304, 0x3001F, 1 << 16),                              # ADCCLK = PCLK2 / 4
+    # read for check_registers' own checks
+    ("DMA1_S0NDTR", 0x40026014, 0, 0),
+    ("DMA1_S0M0AR", 0x4002601C, 0, 0),
 ]
 
 
@@ -1526,6 +1732,11 @@ def check_registers(c, s, r, ex):
         got = r.registers.get(name)
         if c.check(got is not None, f"couldn't read {name}"):
             c.check(got & mask == value, f"{name} = {got:#010x}, expected {value:#x} under mask {mask:#x}")
+    ring = TOOLS.other_addresses["rx_ring"]
+    got = r.registers.get("DMA1_S0M0AR")
+    c.check(got == ring, f"DMA1 stream 0 memory address {got and hex(got)}, expected rx_ring at {ring:#x}")
+    ndtr = r.registers.get("DMA1_S0NDTR")
+    c.check(ndtr is not None and 1 <= ndtr <= 1024, f"DMA1 stream 0 NDTR {ndtr}, expected 1-1024 of the 1 KB ring")
     btr = {bus: {v for t, label, v in r.audit if label == f"BTR_{bus}" and v} for bus in (P, D)}
     c.check(btr[P] == {0x014B0004}, f"CAN1 BTR {sorted(hex(v) for v in btr[P])}, expected 0x14b0004 "
                                      "(500 kbit/s, 1 + 12 + 5 tq, SJW 2, same as Mbed)")
@@ -1640,13 +1851,13 @@ def scenarios():
     result = []
 
     # Boot with everything at rest: the whole schedule on both buses, the
-    # register audit, torque 0 at rest, nothing enabled
+    # register audit, the VN-200 setup, torque 0 at rest, nothing enabled
     s = Scenario("boot", 1.3, "boot, schedule, register audit", registers=True)
 
     def boot_check(c, s, r, ex):
         check_registers(c, s, r, ex)
         check_outputs_before_clocks(c, s, r, ex)
-        expect_counts(c, {"coinciding jobs": 6, "torque 0": 25,
+        expect_counts(c, {"coinciding jobs": 6, "torque 0": 25, "IMU frames with data": 300, "VN-200 commands": 6,
                           "403 steering": 20, "402 pedal": 20, "660 frames": 10})
         c.check(not r.pins["PC0"] and not r.pins["PA7"] and not r.pins["PB1"] and not r.pins["PC4"],
                 f"an output changed at rest: {r.pins}")
@@ -1915,15 +2126,56 @@ def scenarios():
     s.checks.append(wheel_check)
     result.append(s)
 
+    # VN-200 end to end: values and scaling in all five frames, corrupt
+    # messages, noise, an asynchronous error, a short gap, and a sensor reset
+    # that stops the messages (reconfigured 500 ms later)
+    s = Scenario("imu", 4.2, "VN-200 setup, frames, CRC errors, gaps, reset and reconfiguration")
+    s.imu_command(1000, "corrupt 3")
+    s.imu_command(1252, "inject 00112233445566778899aabbccddeeff")
+    s.imu_command(1400, "error 0B")
+    s.imu_command(1603, "mute")                # 250 ms without messages: no timeout
+    s.imu_command(1853, "unmute")
+    s.imu_command(2303, "reset")               # factory settings: binary output off
+
+    def imu_check(c, s, r, ex):
+        vb = ex.vn[id(ex.running[0])]
+        c.check(len(vb.configs) == 2, f"{len(vb.configs)} configurations, expected 2 (boot, after the reset)")
+        c.check(len(vb.bad) == 3, f"{len(vb.bad)} corrupt messages reached the driver, expected 3")
+        if len(vb.configs) == 2:
+            last = max(d for d, k in vb.packets if d < vb.configs[1])
+            gap = vb.configs[1] - last
+            c.check(VN_DATA_TIMEOUT <= gap <= VN_DATA_TIMEOUT + 2 * PASS_MAX,
+                    f"reconfigured {gap / MS:.3f} ms after the last message, expected 500 ms")
+        expect_counts(c, {"IMU frames with data": 1500})
+    s.checks.append(imu_check)
+    result.append(s)
+
+    # No VN-200: retries every 100 ms, 1 s back off, nothing disturbed; then
+    # it's plugged in and the next attempt configures it
+    s = Scenario("imu_missing", 3.6, "VN-200 not answering, then plugged in", imu="off")
+    s.imu_command(2000, "on")
+    ready_to_drive(s, 200)
+    s.apps(800, 0.4)
+
+    def missing_check(c, s, r, ex):
+        vb = ex.vn[id(ex.running[0])]
+        sent = [t for t, line in vn_log(r)[0] if line == VN_COMMANDS[0]]
+        c.check(len(sent) == 7, f"{len(sent)} VNASY,0 sent, expected 3 + 3 + 1: {[round(x / MS) for x in sent]}")
+        c.check(len(vb.configs) == 3, f"{len(vb.configs)} configurations started, expected 3")
+        c.check(vb.packets, "never configured after the sensor came on")
+        expect_counts(c, {"torques": 30, "IMU frames": 1500})
+    s.checks.append(missing_check)
+    result.append(s)
+
     # TX queue: mailboxes busy for 25 ms on CAN_D and 60 ms on CAN_P (all
-    # frames wait in the queue and go out in order), then 450 ms on CAN_D
+    # frames wait in the queue and go out in order), then 200 ms on CAN_D
     # (the 32-frame queue overflows; the oldest 32 go out, the rest count as
     # dropped)
     s = Scenario("can_tx_queue", 2.1, "TX queue: mailboxes held, frames kept in order, overflow counted; "
                                       "CAN errors on the debug line")
     s.hold_mailboxes(D, 303.3, 328.3)
     s.hold_mailboxes(P, 501.7, 561.7)
-    s.hold_mailboxes(D, 553.3, 1003.3, overflow=True)
+    s.hold_mailboxes(D, 803.3, 1003.3, overflow=True)
     # Error counters on the debug line: TEC set through ESR, bus-off forced
     s.events.append((1200 * MS, f"write {CAN_BASE[P] + 0x18:X} 00800000"))  # TEC 128
     s.events.append((1200 * MS, f"write {CAN_BASE[D] + 0x18:X} 00050000"))  # TEC 5
@@ -1980,7 +2232,7 @@ def scenarios():
     result.append(s)
 
     # TIM5 wraps 1 s after boot, in the middle of a buzzer, an implausibility,
-    # pedal steps and wheel speeds. The timebase counts the
+    # pedal steps, wheel speeds and VN-200 messages. The timebase counts the
     # wrap (check_tim5_wraps), so the 64-bit time just carries on.
     s = Scenario("timer_wrap", 2.6, "TIM5 wrapping under everything, counted by the timebase")
     s.tim5_start = 2 ** 32 - 1000 * MS
@@ -2006,7 +2258,7 @@ def scenarios():
     result.append(s)
 
     # 20 s of everything at once at the real rates
-    s = Scenario("soak", 20.0, "20 s: pedal sweeps, brakes, RTD cycles, every frame type")
+    s = Scenario("soak", 20.0, "20 s: pedal sweeps, brakes, RTD cycles, every frame type, VN-200")
     ready_to_drive(s, 150)
     for ms in range(500, 20000, 100):
         phase = (ms % 4000) / 2000
@@ -2041,7 +2293,7 @@ def scenarios():
 
     def soak_check(c, s, r, ex):
         expect_counts(c, {"torques": 100, "torque ranges": 500, "forwarded": 2100, "660 after an update": 200,
-                          "debug lines": 39, "PowerReady bits": 700})
+                          "IMU frames with data": 9500, "debug lines": 39, "PowerReady bits": 700})
         c.check(len(ram_rises(r, "ba")) == 5, f"brake + accel latched {len(ram_rises(r, 'ba'))} times, expected 5")
         light = len([1 for t, v in r.pins["PC0"] if v])
         c.check(light == 6, f"RTD light came on {light} times, expected 6")
@@ -2099,7 +2351,7 @@ def scenarios():
 
 
 GENERAL = [check_run, check_boots, check_tim5_wraps, check_schedule, check_frames, check_forwarding,
-           check_traction, check_debug_lines, check_pins, check_ram]
+           check_traction, check_vn200, check_imu_frames, check_debug_lines, check_pins, check_ram]
 
 
 # --- main ------------------------------------------------------------------------
@@ -2169,7 +2421,7 @@ def main():
         sys.exit(f"Renode not found at {TOOLS.renode}, pass --renode")
     TOOLS.addr2line = find_tool(TOOLS.elf, "addr2line")
     TOOLS.functions, TOOLS.ram, TOOLS.other_addresses = symbols(TOOLS.elf)
-    TOOLS.other = dict(TOOLS.other_addresses)
+    TOOLS.other = {k: v for k, v in TOOLS.other_addresses.items() if k != "rx_ring"}
 
     todo = [s for s in all_scenarios if not args.only or s.name in args.only]
     if args.only and len(todo) != len(set(args.only)):
