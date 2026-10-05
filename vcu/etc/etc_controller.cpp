@@ -55,69 +55,28 @@ bool ETCController::in_range(float value, float low, float high) {
 }
 
 float ETCController::accelerator_mapping(float pedal_travel) {
-    // Pre-computed 41-Point 3rd Degree Polynomial (-0.2x^3 + 0.9x^2 + 0.3x) LUT
-    static constexpr float TORQUE_LUT[41] = {
-        0.000000000f,
-        0.008059375f,
-        0.017225000f,
-        0.027478125f,
-        0.038800000f,
-        0.051171875f,
-        0.064575000f,
-        0.078990625f,
-        0.094400000f,
-        0.110784380f,
-        0.128125000f,
-        0.146403120f,
-        0.165600000f,
-        0.185696880f,
-        0.206675000f,
-        0.228515630f,
-        0.251200000f,
-        0.274709370f,
-        0.299025000f,
-        0.324128120f,
-        0.350000000f,
-        0.376621870f,
-        0.403975000f,
-        0.432040630f,
-        0.460800000f,
-        0.490234380f,
-        0.520325000f,
-        0.551053130f,
-        0.582400000f,
-        0.614346870f,
-        0.646875000f,
-        0.679965630f,
-        0.713600000f,
-        0.747759380f,
-        0.782425000f,
-        0.817578130f,
-        0.853200000f,
-        0.889271880f,
-        0.925775000f,
-        0.962690630f,
-        1.000000000f
-    };
-
-    // Not upstream: with the pedal at rest the deadzone math gives a
+    // Not upstream: upstream interpolates in a 41-point table of this cubic,
+    // which is up to 1.4e-4 (3 torque counts) above the curve between points.
+    // Here it's the cubic itself. Fused multiply-adds (vfma on the F446) make
+    // the host tests round it the same as the target, and in this order it
+    // never decreases from one float to the next on [0, 1]; plain Horner form
+    // does in places, by enough to drop the torque a count.
+    //
+    // Also not upstream: with the pedal at rest the deadzone math gives a
     // pedal_travel down to -0.0319. Upstream then reads TORQUE_LUT[-1] (out of
     // bounds), and from -0.025 to 0 it extrapolates to a negative torque.
     if (pedal_travel < 0.0f) {
         pedal_travel = 0.0f;
     }
 
-    float scaled_index = pedal_travel * 40.0f;
-    int index = static_cast<int>(scaled_index);
-
-    if (index >= 40) {
+    // Full torque from a full pedal, as upstream's last table point
+    if (pedal_travel >= 1.0f) {
         return 1.0f;
     }
 
-    float fraction = scaled_index - static_cast<float>(index);
-
-    // Linear interpolation between table points
-    return TORQUE_LUT[index] + fraction * (TORQUE_LUT[index + 1] - TORQUE_LUT[index]);
+    // -0.2x^3 + 0.9x^2 + 0.3x
+    const float x = pedal_travel;
+    return std::fma(std::fma(-0.2f * x, x, 0.9f * x), x, 0.3f * x);
 }
 
 void ETCController::update_state() {

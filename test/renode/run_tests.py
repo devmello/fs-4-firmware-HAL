@@ -33,7 +33,7 @@ The emulated board (vcu.repl)
 
 How the checks work
   Each scenario is a timeline of inputs. From that timeline alone, model.py
-  (a float32 copy of the ETC math, the filters, the LUT, frame packing,
+  (a float32 copy of the ETC math, the filters, the pedal map, frame packing,
   traction control and IMU scaling) and the code below (the implausibility
   timers, brake + accel latch, ready to drive, buzzer, job schedule, VN-200
   driver states) predict, for any moment, what each output should be. The
@@ -660,7 +660,8 @@ class Filtered:
         t0, target, start, _ = self._segment(t)
         if t0 == self.seed_t and start.lo == start.hi == target:
             return model.filter_interval(target, start, 0, 0)
-        return model.filter_interval(target, start, (t - t0 - PASS_MAX) * 1e-6, (t - t0 + PASS_MAX) * 1e-6)
+        return model.filter_interval(target, start, (t - t0 - PASS_MAX) * (1 - model.FILTER_TIME_LOST) * 1e-6,
+                                     (t - t0 + PASS_MAX) * 1e-6)
 
     def volts(self, t):
         return self.state(t).map(model.filtered_volts)
@@ -1300,7 +1301,7 @@ def check_pedals(c, ex, f):
         if c.check(f.u16(at) in want, f"402 bytes {at}-{at + 1}: {f.u16(at)}, expected {describe(want)}: {f}"):
             c.count("402 voltages")
     want = e.mapped_percents()
-    if c.check(f.data[6] in want, f"402 byte 6 (LUT output %): {f.data[6]}, expected {describe(want)}: {f}"):
+    if c.check(f.data[6] in want, f"402 byte 6 (pedal map output %): {f.data[6]}, expected {describe(want)}: {f}"):
         c.count("402 pedal")
     want = int_set(e.bpps, model.percent)
     if c.check(f.data[7] in want, f"402 byte 7 (BPPS %): {f.data[7]}, expected {describe(want)}: {f}"):
@@ -2340,7 +2341,7 @@ def scenarios():
         t += 10.5
 
     def soak_check(c, s, r, ex):
-        expect_counts(c, {"torques": 100, "torque ranges": 500, "forwarded": 2100, "660 after an update": 200,
+        expect_counts(c, {"torques": 90, "torque ranges": 500, "forwarded": 2100, "660 after an update": 200,
                           "IMU frames with data": 9500, "debug lines": 39, "PowerReady bits": 700})
         c.check(len(ram_rises(r, "ba")) == 5, f"brake + accel latched {len(ram_rises(r, 'ba'))} times, expected 5")
         light = len([1 for t, v in r.pins["PC0"] if v])

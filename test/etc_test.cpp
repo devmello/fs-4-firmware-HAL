@@ -207,39 +207,68 @@ static void test_torque_at_rest_is_zero() {
     CHECK(etc.state.unfiltered_motor_torque == 0);
 }
 
-static float cubic_map(float x) {
-    return -0.2f * x * x * x + 0.9f * x * x + 0.3f * x;
+// The pedal map, -0.2x^3 + 0.9x^2 + 0.3x, in double
+static double cubic_map(double x) {
+    return ((-0.2 * x + 0.9) * x + 0.3) * x;
+}
+
+// Upstream's map: linear interpolation in a 41-point table of the cubic
+static float upstream_table_map(float x) {
+    static constexpr float TORQUE_LUT[41] = {
+        0.000000000f, 0.008059375f, 0.017225000f, 0.027478125f, 0.038800000f, 0.051171875f,
+        0.064575000f, 0.078990625f, 0.094400000f, 0.110784380f, 0.128125000f, 0.146403120f,
+        0.165600000f, 0.185696880f, 0.206675000f, 0.228515630f, 0.251200000f, 0.274709370f,
+        0.299025000f, 0.324128120f, 0.350000000f, 0.376621870f, 0.403975000f, 0.432040630f,
+        0.460800000f, 0.490234380f, 0.520325000f, 0.551053130f, 0.582400000f, 0.614346870f,
+        0.646875000f, 0.679965630f, 0.713600000f, 0.747759380f, 0.782425000f, 0.817578130f,
+        0.853200000f, 0.889271880f, 0.925775000f, 0.962690630f, 1.000000000f,
+    };
+    if (x < 0.0f) {
+        x = 0.0f;
+    }
+    float scaled_index = x * 40.0f;
+    int index = static_cast<int>(scaled_index);
+    if (index >= 40) {
+        return 1.0f;
+    }
+    float fraction = scaled_index - static_cast<float>(index);
+    return TORQUE_LUT[index] + fraction * (TORQUE_LUT[index + 1] - TORQUE_LUT[index]);
 }
 
 static void test_pedal_map() {
     reset_fakes();
     ETCController etc = make_etc();
 
-    struct Point {
-        float position;
-        float torque_fraction;
-    };
-    // Exact table entries (i / 40)
-    const Point points[] = {
-        {0.1f, 0.0388f}, {0.25f, 0.128125f}, {0.5f, 0.35f}, {0.75f, 0.646875f}, {0.9f, 0.8532f},
-    };
-    for (const Point &p : points) {
-        set_pedal(p.position);
-        run(etc, 1, 50000);
-        CHECK_NEAR((etc.state.APPS1_position + etc.state.APPS2_position) / 2.0f, p.position, 1e-5);
-        CHECK_NEAR(etc.state.APPS_position_avg, p.torque_fraction, 2e-5);
-    }
-
-    // Between table points it's a linear interpolation of the cubic
+    // The cubic itself, to float rounding, at any position
     for (float position = 0.0f; position < 0.99f; position += 0.0123f) {
         set_pedal(position);
         run(etc, 1, 50000);
         float before_map = (etc.state.APPS1_position + etc.state.APPS2_position) / 2.0f;
-        CHECK_NEAR(etc.state.APPS_position_avg, cubic_map(before_map), 1.6e-4);
+        double want = cubic_map(before_map);
+        CHECK_NEAR(etc.state.APPS_position_avg, want, 3e-7 * want + 1e-12);
         CHECK(etc.state.APPS_position_avg < 1.0f);
     }
 
-    // index >= 40 returns 1.0, up to the top of the deadzone (1.0319)
+    // Against upstream's table: never more torque, at most 3 counts less
+    // (the table's straight lines lie above the convex cubic). Torque never
+    // goes down as the pedal goes up.
+    int most_below = 0;
+    int16_t last_torque = 0;
+    for (float position = 0.0f; position < 1.0f; position += 0.0007f) {
+        set_pedal(position);
+        run(etc, 1, 50000);
+        float before_map = (etc.state.APPS1_position + etc.state.APPS2_position) / 2.0f;
+        int16_t table_torque = static_cast<int16_t>(upstream_table_map(before_map) * MAX_TORQUE);
+        int below = table_torque - etc.state.unfiltered_motor_torque;
+        CHECK(below >= 0 && below <= 3);
+        most_below = below > most_below ? below : most_below;
+        CHECK(etc.state.unfiltered_motor_torque >= last_torque);
+        last_torque = etc.state.unfiltered_motor_torque;
+    }
+    CHECK(most_below == 3);
+
+    // 1.0 from a full pedal up to the top of the deadzone (1.0319), as
+    // upstream's index >= 40
     for (float travel : {0.98f, 0.99f, 1.0f, 1.02f}) {
         set_apps(travel, travel);
         run(etc, 1, 50000);
