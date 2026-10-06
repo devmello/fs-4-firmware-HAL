@@ -19,6 +19,7 @@ extern "C" {
 #define HAL_DMA_MODULE_ENABLED
 #define HAL_FLASH_MODULE_ENABLED
 #define HAL_GPIO_MODULE_ENABLED
+#define HAL_IWDG_MODULE_ENABLED
 #define HAL_PWR_MODULE_ENABLED
 #define HAL_RCC_MODULE_ENABLED
 #define HAL_TIM_MODULE_ENABLED
@@ -77,6 +78,7 @@ extern "C" {
 #include "stm32f4xx_hal_adc.h"
 #include "stm32f4xx_hal_can.h"
 #include "stm32f4xx_hal_flash.h"
+#include "stm32f4xx_hal_iwdg.h"
 #include "stm32f4xx_hal_pwr.h"
 #include "stm32f4xx_hal_tim.h"
 #include "stm32f4xx_hal_uart.h"

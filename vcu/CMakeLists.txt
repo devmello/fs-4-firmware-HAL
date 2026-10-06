@@ -16,23 +16,27 @@ stm32f4_add_hal(vcu_hal
     DEVICE STM32F446xx
     HSE_VALUE ${BOARD_HSE_VALUE}
     CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/board
-    MODULES adc can tim tim_ex uart
+    MODULES adc can iwdg tim tim_ex uart
 )
 
 add_executable(vcu
     main.cpp
     etc/etc_controller.cpp
+    etc/traction_control.cpp
+    filters/filtered_analog_in.cpp
     board/adc.c
     board/board.c
     board/can.c
     board/console.c
+    board/gpio.c
     board/syscalls.c
     board/timebase.c
+    board/watchdog.c
     ${STM32F4_CMSIS_DIR}/Source/Templates/system_stm32f4xx.c
     ${STM32F4_CMSIS_DIR}/Source/Templates/gcc/startup_stm32f446xx.s
 )
 
-target_include_directories(vcu PRIVATE board etc)
+target_include_directories(vcu PRIVATE board etc filters)
 target_compile_definitions(vcu PRIVATE ${BOARD_DEFINE})
 target_link_libraries(vcu PRIVATE vcu_hal)
 

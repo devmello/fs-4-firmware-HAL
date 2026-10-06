@@ -3,7 +3,9 @@
 #include "adc.h"
 #include "can.h"
 #include "console.h"
+#include "gpio.h"
 #include "timebase.h"
+#include "watchdog.h"
 
 #if defined(BOARD_NUCLEO_F446RE)
 // NUCLEO-F446RE: no crystal, the ST-LINK feeds 8 MHz into OSC_IN (bypass)
@@ -57,14 +59,46 @@ static void clock_init(void) {
     }
 }
 
+static uint32_t reset_flags;
+
 void board_init(void) {
+    reset_flags = RCC->CSR;
+    RCC->CSR |= RCC_CSR_RMVF;
+
     HAL_Init();
+
+    // Outputs low before anything that can take a while (HSE startup), then
+    // the watchdog, so a hang anywhere in init ends in a reset
+    gpio_init();
+    watchdog_init();
     clock_init();
 
     timebase_init();
     console_init();
     adc_init();
     can_init();
+}
+
+const char *board_reset_cause(void) {
+    if ((reset_flags & RCC_CSR_IWDGRSTF) != 0U) {
+        return "watchdog";
+    }
+    if ((reset_flags & RCC_CSR_WWDGRSTF) != 0U) {
+        return "window watchdog";
+    }
+    if ((reset_flags & RCC_CSR_SFTRSTF) != 0U) {
+        return "software";
+    }
+    if ((reset_flags & RCC_CSR_LPWRRSTF) != 0U) {
+        return "low power";
+    }
+    if ((reset_flags & (RCC_CSR_PORRSTF | RCC_CSR_BORRSTF)) != 0U) {
+        return "power on";
+    }
+    if ((reset_flags & RCC_CSR_PINRSTF) != 0U) {
+        return "reset pin";
+    }
+    return "unknown";
 }
 
 void HAL_MspInit(void) {

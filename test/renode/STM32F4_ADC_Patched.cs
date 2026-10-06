@@ -4,8 +4,8 @@
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
-// Copy of Renode 1.17.0's STM32_ADC (renode-infrastructure 066a7f13) with two
-// changes:
+// Copy of Renode 1.17.0's STM32_ADC (renode-infrastructure 066a7f13, same in cd4b002a)
+// with these changes:
 // - A software start converts the channel that is in the sequencer now. The
 //   original only re-reads it when ADON turns on or after a conversion, so the
 //   first sample after HAL_ADC_ConfigChannel came from the old channel.

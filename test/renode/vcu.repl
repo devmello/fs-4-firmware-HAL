@@ -1,4 +1,5 @@
-// VCU (STM32F446RE) on top of Renode's generic STM32F4 platform
+// VCU (STM32F446RE) on top of Renode's generic STM32F4 platform.
+// STM32F4_ADC_Patched.cs has to be included first.
 
 using "platforms/cpus/stm32f4.repl"
 
@@ -21,20 +22,24 @@ cpu:
 timer5:
     frequency: 90000000
 
+// APB1 is 45 MHz. The UART model paces received bytes at the baud rate it
+// works out from BRR and this clock.
 uart4:
     frequency: 45000000
 
-// ADC common registers (CCR holds the ADC clock prescaler) and DBGMCU (TIM5
-// freeze bit). Not modelled by Renode, plain storage so tests can read back
-// what the firmware wrote.
+// ADC common registers (CCR holds the ADC clock prescaler), SYSCFG (EXTICR for
+// the RTD button) and DBGMCU (freeze bits). Not modelled by Renode, plain
+// storage so tests can read back what the firmware wrote.
 adc_common: Memory.ArrayMemory @ sysbus 0x40012300
     size: 0x100
+
+syscfg: Memory.ArrayMemory @ sysbus 0x40013800
+    size: 0x400
 
 dbgmcu: Memory.ArrayMemory @ sysbus 0xE0042000
     size: 0x10
 
-// Not in stm32f4.repl. STM32F4_ADC_Patched.cs has to be included first.
-// One conversion is (56 + 12) cycles at 22.5 MHz = 3.02 us, like adc.c sets up.
+// One conversion is (56 + 12) cycles at 22.5 MHz = 3.02 us, like adc.c sets up
 adc1: Analog.STM32F4_ADC_Patched @ sysbus 0x40012000
     conversionTimeNs: 3022
     IRQ -> nvic@18

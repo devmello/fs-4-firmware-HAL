@@ -1,37 +1,55 @@
 # VCU firmware on an emulated STM32F446, to poke at by hand.
 # Run from the repo root:
 #   renode test/renode/vcu.resc
-# then "start", watch UART4 in the analyzer and CAN frames in the log, and
-# change the pedal with e.g. "adc1 FeedSample 1348 11 -1". $elf can be set
-# before including this script, the default is the debug build.
-# The automated checks are in run_tests.py.
+# then "start". UART4 (the debug lines) opens in an analyzer, every frame on
+# either CAN bus shows in the log. Some inputs to try:
+#   adc1 FeedSample 1250 11 -1         APPS1 (channel 11) to code 1250, about 1 V
+#   adc1 FeedSample 1250 12 -1         APPS2 (12). BPPS is 13, brake pressures
+#                                      0 (rear) and 1 (front), steering 15
+#   can1 InjectFrame 0x391 "44"        battery: precharged, shutdown closed
+#   adc1 FeedSample 750 13 -1          brake pressed
+#   gpioPortC OnGPIO 13 true           RTD button down (false: up)
+#   can2 InjectFrame 0x1A5 "1027"      wheel speed frames (421-424) on CAN_D
+#   machine BlockWatchdogRefresh 0 99999999   stop the IWDG reloads
+# $elf can be set before including this script, the default is the debug
+# build. The automated checks are in run_tests.py.
 
 $elf?=@build/debug/vcu/vcu.elf
 
 include @test/renode/STM32F4_ADC_Patched.cs
+include @test/renode/Recorders.cs
 
 mach create "vcu"
 machine LoadPlatformDescription @test/renode/vcu.repl
 
-# CAN1 on a virtual bus. Every frame shows up in the log.
-emulation CreateCANHub "canHub"
-connector Connect sysbus.can1 canHub
-logLevel 0 canHub
+emulation CreateCANHub "canP"
+emulation CreateCANHub "canD"
+connector Connect sysbus.can1 canP
+connector Connect sysbus.can2 canD
+logLevel 0 canP
+logLevel 0 canD
 
 showAnalyzer sysbus.uart4
 
+# Runs again at every reset, the watchdog's included. A reset clears the ADC
+# inputs in the model, so they're set here: everything at rest.
 macro reset
 """
     sysbus LoadELF $elf
-
-    # Renode's bxCAN model only enters init mode with SLEEP clear. ST's HAL
-    # sets INRQ before clearing SLEEP, and that works on the chip (the Mbed
-    # build used the same HAL_CAN_Init on this board), so clear SLEEP here to
-    # let HAL_CAN_Init through.
-    can1 WriteDoubleWord 0x0 0x00010000
-
-    # APPS at 50% travel: APPS1 0.741 V, APPS2 0.786 V (raw codes, 3.3 V = 4095)
-    adc1 FeedSample 920 11 -1
-    adc1 FeedSample 975 12 -1
+    adc1 FeedSample 491 11 -1
+    adc1 FeedSample 545 12 -1
+    adc1 FeedSample 583 13 -1
+    adc1 FeedSample 447 1 -1
+    adc1 FeedSample 447 0 -1
+    adc1 FeedSample 804 15 -1
 """
 runMacro $reset
+
+# Renode's bxCAN only enters init mode with SLEEP clear. ST's HAL sets INRQ
+# before clearing SLEEP and that works on the chip, so clear SLEEP as
+# can_init() starts.
+cpu WriteWordAt `sysbus GetSymbolAddress "can_init"` 0x40006400 0x00010000
+cpu WriteWordAt `sysbus GetSymbolAddress "can_init"` 0x40006800 0x00010000
+
+# Reset flags in RCC_CSR (IWDGRSTF after a watchdog reset), for the boot line
+machine EmulateResetFlags ""

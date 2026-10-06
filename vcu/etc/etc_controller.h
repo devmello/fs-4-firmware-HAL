@@ -9,54 +9,112 @@
 #include <chrono>
 #include <cstdint>
 
+#include "one_shot.h"
+#include "pins.h"
 #include "stopwatch.h"
+#include "filtered_analog_in.h"
+#include "traction_control.h"
+#include "low_pass_filter.h"
+
+struct ETCState {
+    float APPS1_voltage = 0.0f;
+    float APPS2_voltage = 0.0f;
+    float APPS1_position = 0.0f; // 0 to 1
+    float APPS2_position = 0.0f; // 0 to 1
+    float APPS_position_avg = 0.0f;
+    float BPPS_voltage = 0.0f;
+    float BPPS_position = 0.0f; // 0 to 1
+    float front_BSE_voltage = 0.0f;
+    float rear_BSE_voltage = 0.0f;
+    float front_BSE_pressure = 0.0f;
+    float read_BSE_pressure = 0.0f;
+    int16_t unfiltered_motor_torque = 0.0f; // -32767 to 32768
+    int16_t MAX_SPEED = 7500;
+    uint16_t CHARGE_CURRENT_LIMIT = 100; // amps
+    uint16_t MAX_DISCHARGE_CURRENT_LIMIT = 600; // amps
+    uint16_t DISCHARGE_CURRENT_LIMIT = 570; //amps
+    uint8_t mbb_alive = 0;
+    bool rtd_button_pressed = false;
+    bool ready_to_drive = false;
+    bool motor_enabled = false;
+    bool implaus_APPS_deviation = false;
+    bool implaus_APPS_range = false;
+    bool implaus_BPPS_range = false;
+    bool implaus_BSE_range = false;
+    bool implaus_brake_and_accel = false;
+    bool regen_allowed = false;
+    // solenoid_open: true means the solenoid will be open (default state)
+    // and lets hydraulic brake pressure pass, but false means the solenoid will
+    // close and NOT let hydraulic brake pressure through
+    bool solenoid_open = true;
+    bool reversing = false; // CURRENTLY ISN'T IMPLEMENTED
+    bool brakelight_enabled = false;
+    float wheel_rpm_fl = 0.0f;
+    float wheel_rpm_fr = 0.0f;
+    float wheel_rpm_bl = 0.0f;
+    float wheel_rpm_br = 0.0f;
+    float tc_mult_factor = 1.0f;
+    uint8_t drive_mode = 0;
+    uint8_t traction_mode = 0;
+    uint8_t regen_mode = 0;
+    LowPassFilter<int16_t> motor_torque{40}; // example 40hz frequency for -3db filtering
+
+    uint16_t min_battery_voltage = 420; // centivolts
+    uint16_t current_draw = 0; // amps
+};
 
 class ETCController {
 public:
-    float apps1_voltage = 0.0f;
-    float apps2_voltage = 0.0f;
+    ETCState state;
+    // Set during CAN reads in main
+    bool battery_precharged = false;
+    bool shutdown_closed = false;
+    TractionController traction_controller;
 
-    float apps1_position = 0.0f;
-    float apps2_position = 0.0f;
-    float pedal_position = 0.0f;
-
-    int16_t torque_demand = 0;
-    bool implaus_apps_deviation = false;
-    bool implaus_apps_out_of_range = false;
-    bool motor_enabled = false;
-
-    // ADC1 channels (ADC_CHANNEL_x) for each APPS sensor
-    ETCController(uint32_t apps1_channel, uint32_t apps2_channel);
+    // ADC1 channels (ADC_CH_*) of the five analog inputs, then the RTD button
+    // and the four outputs from gpio.h
+    ETCController(uint32_t APPS1_pin, uint32_t APPS2_pin, uint32_t BPPS_pin, uint32_t front_BSE_pin, uint32_t rear_BSE_pin, gpio_input_t rtd_button_pin, gpio_output_t rtd_light_pin, gpio_output_t rtd_buzzer_pin, gpio_output_t solenoid_pin, gpio_output_t brakelight_pin); // add ref to imu at end
 
     void update_state();
 
+    // Not an interrupt handler in the port: main calls this once per loop pass
+    // when the RTD button's EXTI rise counter moved, so several edges within
+    // one pass become one call. Slower bounce still toggles RTD, as in Mbed.
+    void rtd_button_irq();
+
+    void update_regen_state(float speed);
+
+    void set_regen_torque(bool is_regening, bool solenoid_open, int16_t regen_torque);
+
+    void update_mbb_alive();
+
+    void turn_off_rtd();
+
+    void turn_on_rtd();
+
+    float current_limit(float voltage, float current);
+
 private:
-    uint32_t apps1_channel;
-    uint32_t apps2_channel;
+    AdcInput unfiltered_APPS1_input;
+    FilteredAnalogIn APPS1_input;
+    AdcInput unfiltered_APPS2_input;
+    FilteredAnalogIn APPS2_input;
+    AdcInput unfiltered_BPPS_input;
+    FilteredAnalogIn BPPS_input;
+    AdcInput unfiltered_front_BSE_input;
+    FilteredAnalogIn front_BSE_input;
+    AdcInput unfiltered_rear_BSE_input;
+    FilteredAnalogIn rear_BSE_input;
 
-    float apps1_travel = 0.0f;  // unclamped, before deadzone
-    float apps2_travel = 0.0f;
+    InputPin rtd_button;
+    OutputPin rtd_light;
+    OutputPin rtd_buzzer;
+    OneShot rtd_buzzer_timeout;
 
-    static constexpr int SAMPLES_PER_READ = 8;
+    OutputPin solenoid;
+    OutputPin brakelight;
 
-    Stopwatch fault_timer;
-    Stopwatch clear_timer;
-    bool implaus_active = true;  // start disabled
-    bool deviation_seen = false;
-    bool out_of_range_seen = false;
-
-    static constexpr float MAX_APPS_DEVIATION = 0.10f;       // T.4.2.4
-    static constexpr float APPS_OUT_OF_RANGE_MARGIN = 0.05f; // T.4.2.10
-    static constexpr std::chrono::milliseconds IMPLAUS_TIME_LIMIT{100}; // T.4.2.5
-    static constexpr std::chrono::milliseconds IMPLAUS_CLEAR_TIME{100};
-
-    static constexpr float PEDAL_MAP_LINEARITY = 0.5f;       // 1.0 = linear
-
-    /*
-        !! IMPORTANT: All global voltages are based off     !!
-        !! an older testing time. Still, voltages           !!
-        !! should always be checked and updated if wrong.   !!
-    */
+    static constexpr std::chrono::seconds RTD_BUZZER_DURATION{2};
 
     static constexpr float APPS1_MIN_VOLTAGE = 0.396;
     static constexpr float APPS1_MAX_VOLTAGE = 1.086f;
@@ -66,22 +124,57 @@ private:
 
     static constexpr float PEDAL_DEADZONE_PERCENTAGE = 0.03;
 
-    static constexpr int16_t MAX_TORQUE = 32767 * 0.1; // Multiplied by 0.1 for controlled
-                                                       // motor torque during onboarding.
+    static constexpr float BPPS_MIN_VOLTAGE = 0.460f;
+    static constexpr float BPPS_MAX_VOLTAGE = 0.972f; // 2.8125f;
 
-    float clamp(float value);
+    static constexpr float FRONT_BSE_MIN_VOLTAGE = 0.340f;
+    static constexpr float FRONT_BSE_MAX_VOLTAGE = 1.386f;
 
-    bool in_range(float value, float low, float high);
+    static constexpr float REAR_BSE_MIN_VOLTAGE = 0.340f;
+    static constexpr float REAR_BSE_MAX_VOLTAGE = 1.386f;
 
-    float read_average_voltage(uint32_t channel);
+    static constexpr float APPS_BUFFER_VOLTAGE = 0.015f;
+    static constexpr float BPPS_BUFFER_VOLTAGE = 0.010f;
+    static constexpr float FRONT_BSE_BUFFER_VOLTAGE = 0.02f;
+    static constexpr float REAR_BSE_BUFFER_VOLTAGE = 0.02f;
 
-    float voltage_to_travel(float voltage, float min_voltage, float max_voltage);
+    // Using BPPS instead
+    // static constexpr float FRONT_BSE_ACTIVATION_VOLTAGE = 0.5f;
+    // static constexpr float REAR_BSE_ACTIVATION_VOLTAGE = 0.5f;
+    static constexpr float BPPS_MAX_NON_REGEN_BRAKING = 0.9f;
 
-    float travel_to_position(float travel);
+    static constexpr float BPPS_BRAKE_ENGAGE_PERCENT = 0.09f;
+    static constexpr float MAX_APPS_POSITION_DEVIATION = 0.10f;
 
-    float map_pedal(float position);
+    static constexpr int16_t MAX_TORQUE = 32767*0.65;
+    static constexpr int16_t MAX_REGEN_TORQUE = 32767*0.65;
 
-    void update_implausibilities();
+    static constexpr bool REGEN_FORCE_DISABLE = true;
+    static constexpr bool TRACTION_CONTROL_FORCE_DISABLE = true;
+    static constexpr bool SOLENOID_FORCE_OPEN = true; // open = brake fluid can flow = default state
+
+    Stopwatch implaus_APPS_deviation_timer;
+    Stopwatch implaus_APPS_range_timer;
+    Stopwatch implaus_BPPS_range_timer;
+    Stopwatch implaus_BSE_range_timer;
+    Stopwatch implaus_brake_and_accel_timer;
+    bool implaus_APPS_deviation_timer_running = false;
+    bool implaus_APPS_range_timer_running = false;
+    bool implaus_BPPS_range_timer_running = false;
+    bool implaus_BSE_range_timer_running = false;
+    [[maybe_unused]] bool implaus_brake_and_accel_timer_running = false; // never used, same as upstream
+
+    // VectorNavIMU &vn_imu;
+
+    static float clamp(float value);
+
+    static bool in_range(float value, float low, float high);
+
+    void update_implaus();
+
+    void update_implaus_timer(Stopwatch &timer, bool &timer_running, bool implaus_state, bool &etc_implaus);
+
+    float accelerator_mapping(float pedal_travel);
 };
 
 #endif
